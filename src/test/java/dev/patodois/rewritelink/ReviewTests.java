@@ -151,6 +151,8 @@ final class ReviewTests {
 
         // ----- Truncation under a mapped reader (Rv3), in a child JVM so a crash cannot take the runner down
         test("review M5: a pixel file truncated under a reader is gone, not a crash", () -> {
+            // Windows refuses to shorten a file any process has mapped, so a reader there can never see it shrink
+            if (System.getProperty("os.name", "").startsWith("Windows")) return;
             Path p = temp("trunc.frames");
             List<String> cmd = new ArrayList<>();
             cmd.add(System.getProperty("java.home") + "/bin/java");
