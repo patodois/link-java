@@ -1,14 +1,16 @@
 package dev.patodois.rewritelink;
 
 import java.io.IOException;
-import java.lang.invoke.MethodHandles;
-import java.lang.invoke.VarHandle;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
+import java.nio.LongBuffer;
 import java.nio.channels.FileChannel;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.Objects;
 
 /**
  * The shared-memory pixel file of CONTRACT.md section 9.6 (revision 3, with the optional depth
@@ -27,10 +29,120 @@ public final class PixelFile {
     public static final int DEPTH_LINEAR_F32 = 1;
     private static final int MAX_DIM = 1 << 15;
 
-    private static final VarHandle LOCK = MethodHandles.byteBufferViewVarHandle(long[].class, ByteOrder.LITTLE_ENDIAN);
+    // ------------------------------------------------------------------ the seqlock on Java 8
+    //
+    // CONTRACT 9.6 asks for atomic 64-bit access to `lock` with acquire/release ordering and for
+    // release/acquire fences around the slot data. Java 9 has VarHandle for that; this library
+    // targets Java 8 (Minecraft 1.7.10 and 1.12.2), where there is no VarHandle, no public fence
+    // API and (by choice) no sun.misc.Unsafe. What Java 8 does give us, used here:
+    //
+    //  * Atomicity of the 64-bit word: a LongBuffer *view* of the mapping. Its get(i) and put(i, v)
+    //    are a single aligned 64-bit access of the mapped memory on every platform. ByteBuffer.getLong
+    //    is not used for `lock`: on a platform whose JDK 8 does not list it as "unaligned capable"
+    //    it assembles the value byte by byte, which could tear. Every slot, and so every `lock`,
+    //    starts at a multiple of 64 bytes from the (page aligned) start of the mapping.
+    //
+    //  * Ordering: a full fence, built from the one thing Java 8 specifies as a total order,
+    //    a volatile read-modify-write (AtomicInteger.incrementAndGet). The JIT treats it as a barrier for
+    //    all memory, including the mapped memory (HotSpot: MemBarRelease + the atomic + MemBarAcquire;
+    //    x86 `lock xadd`, AArch64 an acquire/release exclusive pair), and the CPU executes a real
+    //    barrier. A full fence is stronger than the release fence, acquire fence and release store
+    //    the contract names, so every ordering the contract asks for holds:
+    //      writer: store lock+1; FENCE; slot data; FENCE; store lock+2; FENCE
+    //      reader: l1 = lock; FENCE; copy slot data; FENCE; l2 = lock
+    //    The first writer fence keeps the odd store ahead of the data stores, the second keeps the
+    //    data stores ahead of the even store (the release store), the third pushes the even store out
+    //    before the Frame datagram is sent. The reader's first fence is the acquire of `lock`, the second
+    //    the acquire fence of step 3. On Java 8 the cost, two or three atomic operations per frame, is
+    //    nothing next to copying the pixels.
+    //
+    // The same code is used on newer JVMs: the fence is an ordinary atomic there too. The tests run a
+    // writer and a reader thread against each other (PixelFileTests) on Java 8 and on 25.
+
+    private static final AtomicInteger FENCE = new AtomicInteger();
+
+    /** A full memory fence (see the note above). */
+    static void fence() {
+        FENCE.incrementAndGet();
+    }
 
     /** One frame copied out of a slot. {@code depth} is null when the file has no usable depth plane. */
-    public record Frame(long frame, long timeUs, int cameraSeq, int width, int height, byte[] rgba, float[] depth) {}
+    public static final class Frame {
+        private final long frame;
+        private final long timeUs;
+        private final int cameraSeq;
+        private final int width;
+        private final int height;
+        private final byte[] rgba;
+        private final float[] depth;
+
+        public Frame(long frame, long timeUs, int cameraSeq, int width, int height, byte[] rgba, float[] depth) {
+            this.frame = frame;
+            this.timeUs = timeUs;
+            this.cameraSeq = cameraSeq;
+            this.width = width;
+            this.height = height;
+            this.rgba = rgba;
+            this.depth = depth;
+        }
+
+        public long frame() {
+            return frame;
+        }
+
+        public long timeUs() {
+            return timeUs;
+        }
+
+        public int cameraSeq() {
+            return cameraSeq;
+        }
+
+        public int width() {
+            return width;
+        }
+
+        public int height() {
+            return height;
+        }
+
+        public byte[] rgba() {
+            return rgba;
+        }
+
+        public float[] depth() {
+            return depth;
+        }
+
+        @Override
+        public boolean equals(Object o) {
+            if (this == o) return true;
+            if (!(o instanceof Frame)) return false;
+            Frame that = (Frame) o;
+            return frame == that.frame && timeUs == that.timeUs && cameraSeq == that.cameraSeq
+                    && width == that.width && height == that.height
+                    && Objects.equals(rgba, that.rgba) && Objects.equals(depth, that.depth);
+        }
+
+        @Override
+        public int hashCode() {
+            int h = 0;
+            h = 31 * h + Long.hashCode(frame);
+            h = 31 * h + Long.hashCode(timeUs);
+            h = 31 * h + Integer.hashCode(cameraSeq);
+            h = 31 * h + Integer.hashCode(width);
+            h = 31 * h + Integer.hashCode(height);
+            h = 31 * h + Objects.hashCode(rgba);
+            h = 31 * h + Objects.hashCode(depth);
+            return h;
+        }
+
+        @Override
+        public String toString() {
+            return "Frame[frame=" + frame + ", timeUs=" + timeUs + ", cameraSeq=" + cameraSeq + ", width=" + width
+                    + ", height=" + height + ", rgba=" + rgba + ", depth=" + depth + "]";
+        }
+    }
 
     /** A file that is not a valid pixel file (wrong magic, impossible sizes...). */
     public static final class FormatException extends IOException {
@@ -47,16 +159,21 @@ public final class PixelFile {
     public static final class Reader implements AutoCloseable {
         private final FileChannel channel;
         private final ByteBuffer map;
+        private final LongBuffer locks; // the same mapping as 64-bit words: slot lock i is word (slot start) / 8
         public final int slots, width, height, stride;
         public final long slotSize;
         public final int depthFormat;
         private final int depthStride;
         private final long depthOffset;
 
+        // Diagnostics for the tests: why read() returned null. Not synchronized.
+        long skippedBusy, skippedOtherFrame, skippedOverwritten;
+
         private Reader(FileChannel channel, ByteBuffer map, int slots, int width, int height, int stride, long slotSize, int depthFormat,
                        int depthStride, long depthOffset) {
             this.channel = channel;
             this.map = map;
+            this.locks = map.asLongBuffer();
             this.slots = slots;
             this.width = width;
             this.height = height;
@@ -86,8 +203,9 @@ public final class PixelFile {
                 if (size > Integer.MAX_VALUE) throw new FormatException("pixel file larger than 2 GiB");
                 ByteBuffer m = ch.map(FileChannel.MapMode.READ_ONLY, 0, size).order(ByteOrder.LITTLE_ENDIAN);
                 byte[] magic = new byte[8];
-                m.get(0, magic);
-                if (!"RBFRAME".equals(new String(magic, 0, 7, java.nio.charset.StandardCharsets.US_ASCII)) || magic[7] != 0) {
+                ByteBuffer head = m.duplicate();
+                head.get(magic); // relative get from position 0: the absolute bulk get is Java 13
+                if (!"RBFRAME".equals(new String(magic, 0, 7, StandardCharsets.US_ASCII)) || magic[7] != 0) {
                     throw new FormatException("bad pixel file magic");
                 }
                 int version = m.getInt(8);
@@ -125,14 +243,23 @@ public final class PixelFile {
         public Frame read(long frame, int slot, boolean wantDepth) {
             if (slot < 0 || slot >= slots) return null;
             int base = (int) (HEADER_LEN + (long) slot * slotSize);
-            long l1 = (long) LOCK.getAcquire(map, base);
-            if ((l1 & 1) != 0) return null;
+            long l1 = locks.get(base >> 3); // step 1: l1 = lock, then the acquire (see "the seqlock on Java 8")
+            fence();
+            if ((l1 & 1) != 0) {
+                skippedBusy++;
+                return null;
+            }
             long f = map.getLong(base + 8), timeUs = map.getLong(base + 16);
             int camSeq = map.getInt(base + 24), w = map.getInt(base + 28), h = map.getInt(base + 32);
-            if (f != frame || w < 1 || h < 1 || w > width || h > height) return null;
+            if (f != frame || w < 1 || h < 1 || w > width || h > height) {
+                skippedOtherFrame++;
+                return null;
+            }
             byte[] rgba = new byte[w * h * 4];
+            ByteBuffer src = map.duplicate(); // a private position, so read() keeps no shared state
             for (int y = 0; y < h; y++) {
-                map.get(base + SLOT_HEADER_LEN + y * stride, rgba, y * w * 4, w * 4);
+                src.position(base + SLOT_HEADER_LEN + y * stride);
+                src.get(rgba, y * w * 4, w * 4);
             }
             float[] depth = null;
             if (wantDepth && hasDepth()) {
@@ -142,9 +269,12 @@ public final class PixelFile {
                     for (int x = 0; x < w; x++) depth[y * w + x] = map.getFloat(row + x * 4);
                 }
             }
-            VarHandle.acquireFence();
-            long l2 = (long) LOCK.getVolatile(map, base);
-            if (l2 != l1 || map.getLong(base + 8) != frame) return null; // overwritten while copying
+            fence(); // step 3: the acquire fence, then l2
+            long l2 = locks.get(base >> 3);
+            if (l2 != l1 || map.getLong(base + 8) != frame) {
+                skippedOverwritten++;
+                return null; // overwritten while copying
+            }
             return new Frame(f, timeUs, camSeq, w, h, rgba, depth);
         }
 
@@ -165,6 +295,7 @@ public final class PixelFile {
         private final Path path;
         private final FileChannel channel;
         private final java.nio.MappedByteBuffer map;
+        private final LongBuffer locks;
         public final int slots, width, height, stride;
         public final long slotSize;
         private final boolean depth;
@@ -186,7 +317,8 @@ public final class PixelFile {
             this.channel = FileChannel.open(path, StandardOpenOption.CREATE_NEW, StandardOpenOption.READ, StandardOpenOption.WRITE);
             this.map = channel.map(FileChannel.MapMode.READ_WRITE, 0, total);
             map.order(ByteOrder.LITTLE_ENDIAN);
-            map.put(0, new byte[] {'R', 'B', 'F', 'R', 'A', 'M', 'E', 0});
+            this.locks = map.asLongBuffer(); // after order(): the view has the same byte order
+            map.duplicate().put(new byte[] {'R', 'B', 'F', 'R', 'A', 'M', 'E', 0}); // relative put at 0: the absolute bulk put is Java 13
             map.putInt(8, 1).putInt(12, slots).putInt(16, width).putInt(20, height).putInt(24, stride).putInt(28, FORMAT_RGBA8);
             map.putLong(32, slotSize);
             map.putInt(40, withDepth ? DEPTH_LINEAR_F32 : DEPTH_NONE).putInt(44, withDepth ? width * 4 : 0).putLong(48, depthOffset);
@@ -205,18 +337,25 @@ public final class PixelFile {
             long frame = ++frameNo;
             int slot = (int) (frame % slots);
             int base = (int) (HEADER_LEN + slot * slotSize);
-            long lock = (long) LOCK.getVolatile(map, base);
-            LOCK.setRelease(map, base, lock + 1);
-            VarHandle.releaseFence();
+            int word = base >> 3;
+            long lock = locks.get(word); // only this writer changes it
+            locks.put(word, lock + 1); // step 1: odd, then the release fence
+            fence();
             map.putLong(base + 8, frame).putLong(base + 16, timeUs).putInt(base + 24, cameraSeq).putInt(base + 28, w).putInt(base + 32, h);
-            for (int y = 0; y < h; y++) map.put(base + SLOT_HEADER_LEN + y * stride, rgba, y * w * 4, w * 4);
+            ByteBuffer dst = map.duplicate(); // a private position for the bulk copies
+            for (int y = 0; y < h; y++) {
+                dst.position(base + SLOT_HEADER_LEN + y * stride);
+                dst.put(rgba, y * w * 4, w * 4);
+            }
             if (depth) {
                 for (int y = 0; y < h; y++) {
                     int row = (int) (base + depthOffset + (long) y * width * 4);
                     for (int x = 0; x < w; x++) map.putFloat(row + x * 4, linearDepth == null ? Float.POSITIVE_INFINITY : linearDepth[y * w + x]);
                 }
             }
-            LOCK.setRelease(map, base, lock + 2);
+            fence(); // the data stores before the even store (release)
+            locks.put(word, lock + 2); // step 3: even again
+            fence(); // out before the caller sends the Frame datagram
             return frame;
         }
 
