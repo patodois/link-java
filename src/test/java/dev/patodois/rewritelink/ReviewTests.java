@@ -270,6 +270,166 @@ final class ReviewTests {
             }
         });
 
+        // ----- M1 (Java): a new frame_channel restarts the frame numbers
+        test("review M1: frames of a new pixel file are not stale", () -> {
+            try (Pair p = new Pair()) {
+                List<LinkEvent> he = new ArrayList<>();
+                for (long f = 1; f <= 10; f++) p.guest.sendFrame(new Wire.FrameReady(f, (int) (f % 3), 0, 16, 8));
+                check(until(2000, () -> {
+                    he.addAll(p.host.poll());
+                    p.guest.poll();
+                    return count(he, LinkEvent.Frame.class) == 10;
+                }), "10 frames of file 1");
+                he.clear();
+                p.announce(new Control.FrameChannel("/tmp/second.frames", 32, 16, 3));
+                Thread.sleep(30);
+                he.addAll(p.host.poll());
+                for (long f = 1; f <= 5; f++) p.guest.sendFrame(new Wire.FrameReady(f, (int) (f % 3), 0, 32, 16));
+                until(1000, () -> {
+                    he.addAll(p.host.poll());
+                    p.guest.poll();
+                    return count(he, LinkEvent.Frame.class) >= 5;
+                });
+                eq(count(he, LinkEvent.Frame.class), 5, "frames 1..5 of the new channel; stale counter " + p.host.stale);
+            }
+        });
+
+        // ----- M2 (Java): a big snapshot, in one call, arrives
+        test("review M2: a 400-chunk collision snapshot completes", () -> {
+            try (Pair p = new Pair()) {
+                List<float[]> tris = new ArrayList<>();
+                for (int i = 0; i < 400 * Wire.MAX_TRIANGLES; i++) tris.add(new float[] {i, 0, 0, i + 1, 0, 0, i, 0, -1});
+                int q = p.host.sendCollision(new float[3], 16f, tris);
+                List<LinkEvent> ge = new ArrayList<>();
+                boolean done = until(15000, () -> {
+                    p.host.poll();
+                    ge.addAll(p.guest.poll());
+                    return count(ge, LinkEvent.Collision.class) > 0;
+                });
+                check(done, "the snapshot never completed");
+                LinkEvent.Collision c = null;
+                for (LinkEvent e : ge) if (e instanceof LinkEvent.Collision) c = (LinkEvent.Collision) e;
+                eq(c.query(), q, "query");
+                eq(c.triangles().size(), tris.size(), "triangles");
+            }
+        });
+
+        // ----- M6 (Java): only spawned entities have pose state
+        test("review M6: poses of unspawned entities are ignored; at most 1024 live entities", () -> {
+            try (Pair p = new Pair()) {
+                List<LinkEvent> he = new ArrayList<>();
+                p.guest.spawn(new Control.Spawn(5, "P", "a", null));
+                long t = Wire.nowUs();
+                p.guest.sendPoses(Arrays.asList(Wire.Pose.identity(5, t), Wire.Pose.identity(6, t)));
+                until(300, () -> {
+                    he.addAll(p.host.poll());
+                    p.guest.poll();
+                    return false;
+                });
+                eq(posesFor(he, 5), 1, "the spawned entity");
+                eq(posesFor(he, 6), 0, "never spawned");
+                he.clear();
+                for (int e = 0; e < 1030; e++) {
+                    if (e == 5) continue;
+                    p.guest.spawn(new Control.Spawn(e, "P", "a", null));
+                }
+                until(500, () -> {
+                    he.addAll(p.host.poll());
+                    p.guest.poll();
+                    return false;
+                });
+                eq(count(he, LinkEvent.Spawn.class), 1023, "spawns up to the table size (entity 5 was already live)");
+                p.guest.sendPoses(Arrays.asList(Wire.Pose.identity(0, t + 5), Wire.Pose.identity(1029, t + 5)));
+                until(300, () -> {
+                    he.addAll(p.host.poll());
+                    p.guest.poll();
+                    return false;
+                });
+                eq(posesFor(he, 0), 1, "a live entity");
+                eq(posesFor(he, 1029), 0, "its spawn was ignored");
+            }
+        });
+
+        test("review M2: collision chunks are paced per poll and a newer snapshot replaces queued ones", () -> {
+            try (Pair p = new Pair()) {
+                List<float[]> big = new ArrayList<>();
+                for (int i = 0; i < 400 * Wire.MAX_TRIANGLES; i++) big.add(new float[] {i, 0, 0, i + 1, 0, 0, i, 0, -1});
+                Thread.sleep(100);
+                p.host.poll();
+                long before = p.host.datagramsSent;
+                p.host.sendCollision(new float[3], 16f, big);
+                p.host.poll();
+                long sent = p.host.datagramsSent - before;
+                check(sent >= 1 && sent <= 33, "one sendCollision and one poll put " + sent + " datagrams on the wire");
+
+                // A second snapshot while the first still waits: the first's chunks are dropped.
+                long before2 = p.host.datagramsSent;
+                int q2 = p.host.sendCollision(new float[] {1, 1, 1}, 8f, big.subList(0, 2 * Wire.MAX_TRIANGLES));
+                List<LinkEvent> ge = new ArrayList<>();
+                check(until(5000, () -> {
+                    p.host.poll();
+                    ge.addAll(p.guest.poll());
+                    return count(ge, LinkEvent.Collision.class) > 0;
+                }), "the replacing snapshot arrives");
+                until(200, () -> {
+                    p.host.poll();
+                    ge.addAll(p.guest.poll());
+                    return false;
+                });
+                long sent2 = p.host.datagramsSent - before2;
+                check(sent2 < 60, "the replaced snapshot's chunks were sent anyway: " + sent2);
+                int n = 0;
+                for (LinkEvent e : ge) {
+                    if (e instanceof LinkEvent.Collision) {
+                        n++;
+                        eq(((LinkEvent.Collision) e).query(), q2, "only the replacing query completes");
+                    }
+                }
+                eq(n, 1, "one snapshot");
+            }
+        });
+
+        test("review M2: sendCollision without a peer is an error", () -> {
+            LinkConfig gc = new LinkConfig("lonely");
+            gc.controlPort = 1;
+            try (Link g = Link.guest(gc)) {
+                boolean threw = false;
+                try {
+                    g.sendCollision(new float[3], 1f, new ArrayList<float[]>());
+                } catch (WireException e) {
+                    threw = true;
+                }
+                check(threw, "not connected");
+            }
+        });
+
+        test("review M6: the unknown_entity and spawn_ignored counters", () -> {
+            try (Pair p = new Pair()) {
+                p.guest.spawn(new Control.Spawn(5, "P", "a", null));
+                long t = Wire.nowUs();
+                p.guest.sendPoses(Arrays.asList(Wire.Pose.identity(5, t), Wire.Pose.identity(6, t), Wire.Pose.identity(7, t)));
+                for (int e = 100; e < 100 + 1030; e++) p.guest.spawn(new Control.Spawn(e, "P", "a", null));
+                until(600, () -> {
+                    p.host.poll();
+                    p.guest.poll();
+                    return false;
+                });
+                eq(p.host.unknownEntity, 2L, "poses of 6 and 7");
+                eq(p.host.spawnIgnored, 7L, "1 + 1030 spawns for 1024 places");
+            }
+        });
+
+        // ----- L8
+        test("review L8: only 127.0.0.1 and the peer's port is the peer", () -> {
+            InetSocketAddress peer = new InetSocketAddress(InetAddress.getByAddress(new byte[] {127, 0, 0, 1}), 5000);
+            check(Link.isPeerAddress(new InetSocketAddress(InetAddress.getByAddress(new byte[] {127, 0, 0, 1}), 5000), peer), "the peer");
+            check(!Link.isPeerAddress(new InetSocketAddress(InetAddress.getByAddress(new byte[] {127, 0, 0, 1}), 5001), peer), "another port");
+            check(!Link.isPeerAddress(new InetSocketAddress(InetAddress.getByAddress(new byte[] {127, 0, 0, 2}), 5000), peer), "another loopback address");
+            check(!Link.isPeerAddress(new InetSocketAddress(InetAddress.getByAddress(new byte[] {127, 1, 2, 3}), 5000), peer), "127.1.2.3");
+            check(!Link.isPeerAddress(new InetSocketAddress(InetAddress.getByName("::1"), 5000), peer), "::1");
+            check(!Link.isPeerAddress(new InetSocketAddress(InetAddress.getByAddress(new byte[] {10, 0, 0, 1}), 5000), peer), "10.0.0.1");
+        });
+
         // ----- L3
         test("review L3: closing a writer unmaps its file before deleting it, and a closed writer refuses writes", () -> {
             Path p = temp("close.frames");
@@ -290,7 +450,58 @@ final class ReviewTests {
             check(!PixelFile.unmap(ByteBuffer.allocate(8)), "a heap buffer cannot be unmapped");
         });
 
+        // ----- announceFrames
+        test("Link.announceFrames sends a frame_channel line", () -> {
+            try (Pair p = new Pair()) {
+                Path file = temp("announce.frames");
+                try (PixelFile.Writer w = new PixelFile.Writer(file, 32, 16, 3, true)) {
+                    p.guest.announceFrames(w);
+                    List<LinkEvent> he = new ArrayList<>();
+                    check(until(2000, () -> {
+                        he.addAll(p.host.poll());
+                        p.guest.poll();
+                        return count(he, LinkEvent.FrameChannel.class) == 1;
+                    }), "the host sees the announcement");
+                    Control.FrameChannel c = null;
+                    for (LinkEvent e : he) if (e instanceof LinkEvent.FrameChannel) c = ((LinkEvent.FrameChannel) e).channel();
+                    eq(c, new Control.FrameChannel(file.toAbsolutePath().toString(), 32, 16, 3), "the channel");
+                    // And what it names opens and reads.
+                    long f = w.write(new byte[32 * 16 * 4], new float[32 * 16], 32, 16, 7, 99L);
+                    try (PixelFile.Reader r = PixelFile.Reader.open(java.nio.file.Paths.get(c.path()))) {
+                        check(r.read(f, (int) (f % 3), true) != null, "the frame reads");
+                    }
+                }
+            }
+        });
 
+        test("review L9: our own heartbeat is kept within what a hello may announce", () -> {
+            LinkConfig hc = new LinkConfig("H");
+            hc.controlPort = 0;
+            LinkConfig gc = new LinkConfig("G");
+            gc.heartbeatMs = 1; // outside 10..10000
+            try (Link host = Link.host(hc)) {
+                gc.controlPort = host.controlPort();
+                try (Link guest = Link.guest(gc)) {
+                    check(until(3000, () -> {
+                        host.poll();
+                        guest.poll();
+                        return host.isConnected() && guest.isConnected();
+                    }), "a guest configured with heartbeat 1 ms still connects");
+                    eq(host.peer().heartbeatMs(), 10L, "it announced the nearest legal value");
+                }
+            }
+        });
+
+        // ----- L9 (Java)
+        test("review L9: heartbeat_ms outside 10..10000 is a handshake error", () -> {
+            for (long ms : new long[] {0, 1, 9, 10001, 3600000L, 4294967295L}) {
+                String reason = helloWithHeartbeat(ms);
+                check(reason != null && reason.contains("heartbeat_ms"), "heartbeat_ms " + ms + ": " + reason);
+            }
+            for (long ms : new long[] {10, 250, 10000}) {
+                eq(helloWithHeartbeat(ms), null, "heartbeat_ms " + ms + " is fine");
+            }
+        });
     }
 
     /** Says hello as a raw guest with the given heartbeat; returns the host's HandshakeFailed reason, or null if it connected. */
@@ -348,6 +559,10 @@ final class ReviewTests {
                 guest.poll();
                 return host.isConnected() && guest.isConnected();
             }), "both sides connect");
+        }
+
+        void announce(Control.FrameChannel c) throws Exception {
+            guest.announceFrames(c);
         }
 
         @Override

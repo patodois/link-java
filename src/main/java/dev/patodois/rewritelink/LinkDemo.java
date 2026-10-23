@@ -1,5 +1,9 @@
 package dev.patodois.rewritelink;
 
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.util.Collections;
 import java.util.List;
 
@@ -10,9 +14,13 @@ import dev.patodois.rewritelink.Control.Role;
  * {@code fake_guest} examples. It plays either role with the same behaviour as those examples.
  *
  * <pre>
- *   java -cp build/classes/java/main dev.patodois.rewritelink.LinkDemo guest [--port 47800] [--seconds 6]
- *   java -cp build/classes/java/main dev.patodois.rewritelink.LinkDemo host  [--port 47800] [--seconds 6]
+ *   java -cp build/classes/java/main dev.patodois.rewritelink.LinkDemo guest [--port 47800] [--seconds 6] [--frames]
+ *   java -cp build/classes/java/main dev.patodois.rewritelink.LinkDemo host  [--port 47800] [--seconds 6] [--big-collision 400]
  * </pre>
+ *
+ * <p>{@code guest --frames} renders a disc with linear depth into a 320x240 pixel file and announces it
+ * for every camera it gets; the host reads such frames and reports what is in them. {@code host
+ * --big-collision N} sends a snapshot of N full chunks each second instead of the small ground patch.
  */
 public final class LinkDemo {
     private LinkDemo() {}
@@ -25,6 +33,8 @@ public final class LinkDemo {
     }
 
     private static long start;
+    private static int bigCollisionChunks;
+    private static boolean frames;
     /** Guest: instead of floating 3 m ahead of the camera, circle it at 8 m (shows movement and heading). */
     private static boolean orbit;
 
@@ -42,6 +52,8 @@ public final class LinkDemo {
         int port = Integer.parseInt(arg(args, "--port", String.valueOf(Wire.DEFAULT_CONTROL_PORT)));
         double seconds = Double.parseDouble(arg(args, "--seconds", "0"));
         orbit = java.util.Arrays.asList(args).contains("--orbit");
+        frames = java.util.Arrays.asList(args).contains("--frames");
+        bigCollisionChunks = Integer.parseInt(arg(args, "--big-collision", "0"));
         start = System.nanoTime();
         LinkConfig cfg = new LinkConfig(host ? "Java Host" : "Java Guest");
         cfg.controlPort = port;
@@ -56,7 +68,9 @@ public final class LinkDemo {
     }
 
     private static void runHost(Link link, double seconds) throws Exception {
-        int cameras = 0, poseMsgs = 0, poses = 0;
+        int cameras = 0, poseMsgs = 0, poses = 0, framesRead = 0, framesMissed = 0;
+        String lastFrame = "none";
+        PixelFile.Reader reader = null;
         float[] lastPose = null;
         double nextReport = 1, nextCollision = 0;
         Double giveBackAt = null;
@@ -69,7 +83,29 @@ public final class LinkDemo {
                     log("host", String.format("connected: guest \"%s\", protocol v%d, session 0x%08x, guest udp %d",
                             c.peer().game(), c.peer().protocol(), c.peer().session(), c.peer().udpAddr().getPort()));
                     nextCollision = t;
+                } else if (e instanceof LinkEvent.FrameChannel) {
+                    Control.FrameChannel c = ((LinkEvent.FrameChannel) e).channel();
+                    closeQuietly(reader);
+                    reader = null;
+                    try {
+                        reader = PixelFile.Reader.open(Paths.get(c.path()));
+                        log("host", "guest pixel file " + c.path() + " (" + c.width() + "x" + c.height() + ", " + c.slots()
+                                + " slots, depth plane: " + reader.hasDepth() + ")");
+                    } catch (IOException ex) {
+                        log("host", "cannot open the guest's pixel file: " + ex.getMessage());
+                    }
+                } else if (e instanceof LinkEvent.Frame) {
+                    Wire.FrameReady fr = ((LinkEvent.Frame) e).frame();
+                    PixelFile.Frame f = reader == null ? null : reader.read(fr.frame(), fr.slot(), true);
+                    if (f == null) {
+                        framesMissed++;
+                    } else {
+                        framesRead++;
+                        lastFrame = describe(f);
+                    }
                 } else if (e instanceof LinkEvent.Lost) {
+                    closeQuietly(reader);
+                    reader = null;
                     log("host", "LOST the guest: " + ((LinkEvent.Lost) e).reason());
                 } else if (e instanceof LinkEvent.HandshakeFailed) {
                     log("host", "handshake failed: " + ((LinkEvent.HandshakeFailed) e).reason());
@@ -107,6 +143,13 @@ public final class LinkDemo {
                             tris.add(new float[] {x, 0, z, x + 1, 0, z + 1, x + 1, 0, z});
                         }
                     }
+                    if (bigCollisionChunks > 0) {
+                        tris = new java.util.ArrayList<>();
+                        for (int i = 0; i < bigCollisionChunks * Wire.MAX_TRIANGLES; i++) {
+                            float x = i % 4096;
+                            tris.add(new float[] {x, 0, 0, x + 1, 0, 0, x, 0, 1});
+                        }
+                    }
                     link.sendCollision(new float[] {cx, 0, cz}, 10, tris);
                 }
                 if (giveBackAt != null && t >= giveBackAt) {
@@ -118,14 +161,38 @@ public final class LinkDemo {
             if (t >= nextReport) {
                 nextReport += 1;
                 if (link.isConnected()) {
-                    log("host", String.format("sent %d cameras; got %d poses in %d datagrams; last pose %s; malformed %d stale %d foreign %d",
+                    log("host", String.format("sent %d cameras; got %d poses in %d datagrams; last pose %s; malformed %d stale %d foreign %d unknown_entity %d",
                             cameras, poses, poseMsgs, lastPose == null ? "none" : java.util.Arrays.toString(lastPose),
-                            link.malformed, link.stale, link.foreign));
+                            link.malformed, link.stale, link.foreign, link.unknownEntity));
+                    if (framesRead + framesMissed > 0) {
+                        log("host", "frames read " + framesRead + ", missed " + framesMissed + "; last: " + lastFrame);
+                    }
                 }
-                cameras = poseMsgs = poses = 0;
+                cameras = poseMsgs = poses = framesRead = framesMissed = 0;
             }
             Thread.sleep(16);
         }
+        closeQuietly(reader);
+    }
+
+    private static void closeQuietly(PixelFile.Reader r) {
+        if (r != null) r.close();
+    }
+
+    /** What the host can tell about a frame it read: its size, camera and how much of it is drawn. */
+    private static String describe(PixelFile.Frame f) {
+        int opaque = 0, finite = 0;
+        float near = Float.POSITIVE_INFINITY, far = 0;
+        for (int i = 0; i < f.width() * f.height(); i++) {
+            if ((f.rgba()[i * 4 + 3] & 0xFF) > 0) opaque++;
+            if (f.depth() != null && Float.isFinite(f.depth()[i])) {
+                finite++;
+                near = Math.min(near, f.depth()[i]);
+                far = Math.max(far, f.depth()[i]);
+            }
+        }
+        return String.format("frame %d %dx%d camera_seq %d, %d drawn pixels, %d with finite depth%s", f.frame(), f.width(), f.height(),
+                Integer.toUnsignedLong(f.cameraSeq()), opaque, finite, finite > 0 ? String.format(" (%.2f..%.2f m)", near, far) : "");
     }
 
     private static void runGuest(Link link, double seconds) throws Exception {
@@ -135,6 +202,8 @@ public final class LinkDemo {
         Double askFocusAt = null;
         float[] lastPos = null;
         long lastT = 0;
+        PixelFile.Writer writer = null;
+        int framesSent = 0;
         while (true) {
             double t = (System.nanoTime() - start) / 1e9;
             if (seconds > 0 && t > seconds) break;
@@ -146,7 +215,17 @@ public final class LinkDemo {
                     link.spawn(new Control.Spawn(cube, "Java Guest", "demo/cube", "Cube"));
                     askFocusAt = t + 2;
                     lastPos = null;
+                    if (frames) {
+                        closeQuietly(writer);
+                        Path file = Paths.get(System.getProperty("java.io.tmpdir"),
+                                "link-java-" + pid() + "-guest-" + Integer.toHexString(c.peer().session()) + ".frames");
+                        writer = new PixelFile.Writer(file, FRAME_W, FRAME_H, 3, true);
+                        link.announceFrames(writer);
+                        log("guest", "pixel file " + file + " (" + FRAME_W + "x" + FRAME_H + ", depth: true)");
+                    }
                 } else if (e instanceof LinkEvent.Lost) {
+                    closeQuietly(writer);
+                    writer = null;
                     log("guest", "LOST the host: " + ((LinkEvent.Lost) e).reason());
                 } else if (e instanceof LinkEvent.HandshakeFailed) {
                     log("guest", "handshake failed: " + ((LinkEvent.HandshakeFailed) e).reason());
@@ -173,6 +252,14 @@ public final class LinkDemo {
                     lastT = now;
                     link.sendPoses(Collections.singletonList(pose));
                     posesSent++;
+                    if (writer != null) {
+                        byte[] rgba = new byte[FRAME_W * FRAME_H * 4];
+                        float[] depth = new float[FRAME_W * FRAME_H];
+                        render(rgba, depth, framesSent);
+                        long number = writer.write(rgba, depth, FRAME_W, FRAME_H, c.header().seq(), Wire.nowUs());
+                        link.sendFrame(new Wire.FrameReady(number, (int) (number % writer.slots), c.header().seq(), FRAME_W, FRAME_H));
+                        framesSent++;
+                    }
                 } else if (e instanceof LinkEvent.Collision) {
                     LinkEvent.Collision c = (LinkEvent.Collision) e;
                     log("guest", "collision query " + Integer.toUnsignedLong(c.query())
@@ -190,12 +277,43 @@ public final class LinkDemo {
             if (t >= nextReport) {
                 nextReport += 1;
                 if (link.isConnected()) {
-                    log("guest", "got " + cameras + " cameras; sent " + posesSent + " poses; focus with the "
+                    log("guest", "got " + cameras + " cameras; sent " + posesSent + " poses, " + framesSent + " frames; focus with the "
                             + link.focus().wire);
                 }
                 cameras = posesSent = 0;
+                framesSent = 0;
             }
             Thread.sleep(4);
+        }
+        closeQuietly(writer);
+    }
+
+    private static final int FRAME_W = 320, FRAME_H = 240;
+
+    /** The process id, on Java 8 too (no ProcessHandle there): the part of the runtime name before the @. */
+    private static String pid() {
+        String name = java.lang.management.ManagementFactory.getRuntimeMXBean().getName();
+        int at = name.indexOf('@');
+        return at > 0 ? name.substring(0, at) : name;
+    }
+
+    private static void closeQuietly(PixelFile.Writer w) {
+        if (w != null) w.close();
+    }
+
+    /** A coloured disc, 3 m away, on nothing: transparent with depth +inf outside it. */
+    private static void render(byte[] rgba, float[] depth, int n) {
+        int cx = FRAME_W / 2 + (n % 40) - 20, cy = FRAME_H / 2, r = 60;
+        for (int y = 0; y < FRAME_H; y++) {
+            for (int x = 0; x < FRAME_W; x++) {
+                int i = y * FRAME_W + x;
+                boolean inside = (x - cx) * (x - cx) + (y - cy) * (y - cy) <= r * r;
+                rgba[i * 4] = (byte) (inside ? 40 + x / 2 : 0);
+                rgba[i * 4 + 1] = (byte) (inside ? 120 : 0);
+                rgba[i * 4 + 2] = (byte) (inside ? 200 - y / 3 : 0);
+                rgba[i * 4 + 3] = (byte) (inside ? 255 : 0);
+                depth[i] = inside ? 3f : Float.POSITIVE_INFINITY;
+            }
         }
     }
 }

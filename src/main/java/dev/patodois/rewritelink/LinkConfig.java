@@ -8,6 +8,7 @@ public final class LinkConfig {
     public int controlPort = Wire.DEFAULT_CONTROL_PORT;
     /** This side's UDP port (0 = any free port); announced in {@code hello}. */
     public int udpPort = 0;
+    /** Heartbeat period; a hello carries it, and a peer accepts 10 to 10000 only, so the link clamps it to that range. */
     public long heartbeatMs = 250;
     /** Watchdog timeout; the effective one is at least four peer heartbeats. */
     public long timeoutMs = 2000;

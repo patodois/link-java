@@ -3,7 +3,7 @@
 A pure-Java implementation of the **rewrite-bridge passthrough link protocol v1**, so that a game
 with a Java runtime (a Minecraft mod, a Hytale plugin, a Java server) can be a **host** or a
 **guest** next to any other game or rewrite that speaks it. The protocol is defined by
-`docs/CONTRACT.md` in the `rewrite-bridge` repository (revision 2); this library is one
+`docs/CONTRACT.md` in the `rewrite-bridge` repository (revision 4); this library is one
 implementation of it, tested against the Rust reference peers (`fake_host`, `fake_guest`).
 
 - No dependencies, no native code, nothing from any game. Package: `dev.patodois.rewritelink`.
@@ -36,7 +36,8 @@ file read-only, validates it, and copies a slot with the seqlock (colour and the
 plane), and a `Writer` for the sending side. `frame_channel` and `Frame` are parsed by `Link` as usual.
 
 The seqlock has to work without `VarHandle` and without `sun.misc.Unsafe`, which Java 8 does not offer
-or this library does not want. The `lock` word is accessed through a `LongBuffer` view of the mapping
+or this library does not want. (`PixelFile.Writer.close()` is the one place that reaches for Unsafe, by
+reflection and only to unmap the file; see "Contract revision 4" below.) The `lock` word is accessed through a `LongBuffer` view of the mapping
 (one aligned 64-bit access on every platform; `ByteBuffer.getLong` can be assembled byte by byte on a
 Java 8 that does not know the CPU), and the contract's release and acquire fences are a full fence made
 from a volatile read-modify-write (`AtomicInteger.incrementAndGet`), which Java 8 specifies as a total
@@ -45,6 +46,40 @@ long comment at the top of `PixelFile.java` has the details, and `PixelFileTests
 against a reader thread (two slots, so the writer keeps lapping the reader) to check that a torn copy is
 never accepted.
 
+## Contract revision 4
+
+What the code review of both implementations changed, in the order of the contract (section 12 of
+`CONTRACT.md` has the reasons; the protocol stays version 1):
+
+- **`Link.sendCollision` queues.** It returns the query number at once, and each `poll()` sends at most
+  32 collision datagrams (`Wire.COLLISION_PER_POLL`), so keep polling after a big snapshot. A snapshot
+  queued while an older one still has chunks waiting replaces them. Receivers ask for a 4 MiB UDP buffer.
+- **Poses need a `spawn`.** A receiver keeps pose state only for entities the peer spawned (at most
+  1024 live ones, `Wire.MAX_ENTITIES`); poses of other ids are dropped and counted in
+  `Link.unknownEntity`, spawns beyond the table in `Link.spawnIgnored`. A host that publishes poses of its
+  own entities must `spawn` them first.
+- **`heartbeat_ms` is 10 to 10000.** A hello outside it fails the handshake; `LinkConfig.heartbeatMs` is
+  clamped to the range when the link is built.
+- **`Link.announceFrames(...)`** sends the `frame_channel` line, for a `Control.FrameChannel` or straight
+  from a `PixelFile.Writer`. A new `frame_channel` resets the frame staleness of the receiving link.
+- **`PixelFile.Reader.open`** refuses a relative path, a symlink or anything that is not a regular file,
+  `width` or `height` above 16384, a `stride` other than `width * 4`, and sizes that overflow. `read`
+  returns null (`isGone()`) once the file is shorter than the mapping, instead of faulting.
+  Java cannot open a FIFO without blocking, so the type is checked before the open.
+- **`PixelFile.Writer`** creates its file with `CREATE_NEW`, validates its arguments
+  (`IllegalArgumentException`, nothing written, no frame number used), always leaves the slot lock even,
+  and refuses writes after `close()`. `close()` unmaps the buffer before deleting the file, through
+  `sun.misc.Unsafe.invokeCleaner` (Java 9+) or the buffer's cleaner (Java 8), both by reflection. Where
+  neither works the file outlives the writer on Windows. JDK 24 and later print one `WARNING` about
+  `sun.misc.Unsafe::invokeCleaner` on stderr at the first close; `--sun-misc-unsafe-memory-access=allow`
+  silences it.
+- **`Json`** accepts exactly what the Rust side's `serde_json` accepts: no leading zeros, unicode escapes
+  of exactly four hex digits with valid surrogate pairs, 127 levels of nesting.
+- **`equals` / `hashCode`** of `Wire.Camera`, `Wire.Pose`, `Wire.CollisionChunk` and
+  `LinkEvent.Collision` (and so `Wire.Decoded`) compare array contents. `Wire.encode` refuses a
+  `chunk_index` that is not below `chunk_count`, and frame 0.
+- Datagrams are accepted from exactly `127.0.0.1:<the peer's udp_port>`.
+
 ## Build and test
 
 ```sh
@@ -52,12 +87,15 @@ export JAVA_HOME=/opt/homebrew/opt/openjdk@25     # any JDK 9+ to build (javac -
 ./gradlew build --no-daemon                       # build/libs/link-java-<version>.jar, and the tests
 ./gradlew linkTests --no-daemon                   # just the tests
 ./gradlew demo --no-daemon --args="guest --port 47800 --orbit"
+./gradlew demo --no-daemon --args="guest --port 47800 --frames"        # renders a disc with depth into a pixel file
+./gradlew demo --no-daemon --args="host --port 47800 --big-collision 400"  # a 3.2 MB collision snapshot each second
 ```
 
 The tests are a plain runner (`LinkTests`, no JUnit): they encode and decode the contract's worked
 example byte for byte, check every layout offset and length, reject malformed input (plus a
 20,000-case fuzz), and run live sessions in one process (handshake, state flow, stale drops,
-`busy`, bad hello, watchdog, clean bye with half-close, foreign addresses), then `PixelFileTests`
+`busy`, bad hello, watchdog, clean bye with half-close, foreign addresses), then `ReviewTests` (one
+regression test per finding of the revision 4 review) and `PixelFileTests`
 (layout, depth plane, refusals, and the writer-against-reader contention test). They are compiled
 for Java 8 too and can run on a Java 8 runtime:
 

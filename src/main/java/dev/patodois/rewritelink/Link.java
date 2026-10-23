@@ -12,6 +12,7 @@ import java.nio.charset.CharacterCodingException;
 import java.nio.charset.CodingErrorAction;
 import java.nio.charset.StandardCharsets;
 import java.security.SecureRandom;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
@@ -63,10 +64,16 @@ public final class Link implements AutoCloseable {
     private int nextQuery = 1;
     private long lastBeat;
     private Role focus = Role.HOST;
+    /** Our heartbeat period: {@link LinkConfig#heartbeatMs} within what a hello may announce. */
+    private final long heartbeatMs;
+    /** Collision chunks waiting to be sent, {@link Wire#COLLISION_PER_POLL} per poll. */
+    private final ArrayDeque<Wire.CollisionChunk> collisionQueue = new ArrayDeque<>();
 
     // per-session state
     private Integer lastCamera;
-    private final Map<Long, Long> poseTimes = new HashMap<>();
+    /** The peer's live spawned entities, each with the time_us of its newest pose. */
+    private final Map<Long, Long> entities = new HashMap<>();
+    private boolean spawnIgnoredLogged;
     private Integer lastCollision;
     private Assembly assembly;
     private long lastFrame;
@@ -74,6 +81,10 @@ public final class Link implements AutoCloseable {
     // diagnostics
     public long datagramsSent, datagramsReceived, malformed, stale, foreign, sendDropped,
             linesSent, linesReceived;
+    /** Pose records for an entity the peer never spawned (or already despawned); not delivered. */
+    public long unknownEntity;
+    /** Spawns ignored because the peer already had {@link Wire#MAX_ENTITIES} live entities. */
+    public long spawnIgnored;
 
     private final ByteBuffer rx = ByteBuffer.allocate(2 * Wire.MAX_DATAGRAM);
 
@@ -334,11 +345,18 @@ public final class Link implements AutoCloseable {
     private Link(Role role, LinkConfig cfg) throws IOException {
         this.role = role;
         this.cfg = cfg;
+        this.heartbeatMs = Math.max(Wire.MIN_HEARTBEAT_MS, Math.min(Wire.MAX_HEARTBEAT_MS, cfg.heartbeatMs));
         long now = now();
         ServerSocketChannel l = null;
         DatagramChannel u = null;
         try {
             u = DatagramChannel.open();
+            try {
+                // Collision snapshots arrive in bursts (CONTRACT.md 2); the OS may grant less, or refuse.
+                u.setOption(StandardSocketOptions.SO_RCVBUF, Wire.RECV_BUFFER_BYTES);
+            } catch (IOException | RuntimeException ignored) {
+                // best effort
+            }
             u.bind(new InetSocketAddress(LOOPBACK, cfg.udpPort));
             u.configureBlocking(false);
             if (role == Role.HOST) {
@@ -416,6 +434,7 @@ public final class Link implements AutoCloseable {
         pollConnect(now);
         pollControl(now);
         pollUdp(now);
+        pumpCollision();
         pollTimers(now);
         List<LinkEvent> out = new ArrayList<>(events);
         events.clear();
@@ -424,7 +443,7 @@ public final class Link implements AutoCloseable {
 
     private Control.Hello hello(int protocol, Long session) {
         return new Control.Hello(role, cfg.game, protocol, Wire.MIN_PROTOCOL_VERSION, udpPort(),
-                cfg.heartbeatMs, cfg.timeoutMs, session);
+                heartbeatMs, cfg.timeoutMs, session);
     }
 
     private void pollConnect(long now) {
@@ -547,17 +566,32 @@ public final class Link implements AutoCloseable {
         if (msg instanceof Control.Hello) {
             return new String[] {"second hello", "bye"};
         } else if (msg instanceof Control.Spawn) {
-            events.add(new LinkEvent.Spawn((Control.Spawn) msg));
+            Control.Spawn sp = (Control.Spawn) msg;
+            // A second spawn of a live id replaces the first; a new id needs a free place.
+            if (!entities.containsKey(sp.entity())) {
+                if (entities.size() >= Wire.MAX_ENTITIES) {
+                    spawnIgnored++;
+                    if (!spawnIgnoredLogged) {
+                        spawnIgnoredLogged = true;
+                        System.err.println("link-java: the peer has " + Wire.MAX_ENTITIES
+                                + " live entities; further spawns are ignored (entity " + sp.entity() + " and later ones)");
+                    }
+                    return null;
+                }
+                entities.put(sp.entity(), 0L);
+            }
+            events.add(new LinkEvent.Spawn(sp));
         } else if (msg instanceof Control.Despawn) {
             Control.Despawn d = (Control.Despawn) msg;
-            poseTimes.remove(d.entity());
-            events.add(new LinkEvent.Despawn(d.entity()));
+            if (entities.remove(d.entity()) != null) events.add(new LinkEvent.Despawn(d.entity()));
         } else if (msg instanceof Control.Input) {
             Control.Input in = (Control.Input) msg;
             boolean requested = role == Role.HOST;
             if (!requested) focus = in.focus();
             events.add(new LinkEvent.Focus(in.focus(), requested));
         } else if (msg instanceof Control.FrameChannel) {
+            // A new pixel file numbers its frames from 1 again (CONTRACT.md 8).
+            lastFrame = 0;
             events.add(new LinkEvent.FrameChannel((Control.FrameChannel) msg));
         }
         // Bye was handled above; an Unknown type is ignored.
@@ -568,6 +602,10 @@ public final class Link implements AutoCloseable {
         Role expected = role.other();
         if (h.role() != expected) return new String[] {"peer claims role " + h.role().wire, "bye"};
         if (h.udpPort() == 0) return new String[] {"peer announced udp_port 0", "bye"};
+        if (h.heartbeatMs() < Wire.MIN_HEARTBEAT_MS || h.heartbeatMs() > Wire.MAX_HEARTBEAT_MS) {
+            return new String[] {"peer announced heartbeat_ms " + h.heartbeatMs() + ", outside " + Wire.MIN_HEARTBEAT_MS
+                    + ".." + Wire.MAX_HEARTBEAT_MS, "bye"};
+        }
         int protocol;
         long session;
         if (role == Role.HOST) {
@@ -616,7 +654,9 @@ public final class Link implements AutoCloseable {
     private void resetSession() {
         focus = Role.HOST;
         lastCamera = null;
-        poseTimes.clear();
+        entities.clear();
+        spawnIgnoredLogged = false;
+        collisionQueue.clear();
         lastCollision = null;
         assembly = null;
         lastFrame = 0;
@@ -648,8 +688,7 @@ public final class Link implements AutoCloseable {
                 continue;
             }
             Live live = (Live) conn;
-            if (!from.equals(live.peer.udpAddr()) && !(from.getAddress().isLoopbackAddress()
-                    && from.getPort() == live.peer.udpAddr().getPort())) {
+            if (!isPeerAddress(from, live.peer.udpAddr())) {
                 foreign++;
                 continue;
             }
@@ -672,6 +711,12 @@ public final class Link implements AutoCloseable {
         }
     }
 
+    /** Exactly 127.0.0.1 and the peer's announced UDP port (CONTRACT.md 2): not another loopback address, not ::1. */
+    static boolean isPeerAddress(InetSocketAddress from, InetSocketAddress peer) {
+        return from != null && from.getAddress() != null && from.getPort() == peer.getPort()
+                && Arrays.equals(from.getAddress().getAddress(), LOOPBACK.getAddress());
+    }
+
     private void onDatagram(Header header, Datagram body) {
         if (body instanceof Datagram.CameraMsg) {
             if (lastCamera != null && !Wire.seqNewer(header.seq(), lastCamera)) {
@@ -684,10 +729,14 @@ public final class Link implements AutoCloseable {
             List<Wire.Pose> poses = ((Datagram.PoseMsg) body).poses();
             List<Wire.Pose> fresh = new ArrayList<>(poses.size());
             for (Wire.Pose pose : poses) {
-                long last = poseTimes.getOrDefault(pose.entity(), 0L);
+                Long last = entities.get(pose.entity());
+                if (last == null) {
+                    unknownEntity++; // never spawned (or despawned): no state is kept for it
+                    continue;
+                }
                 // time_us is a u64 sampled from the wall clock; it never reaches the sign bit.
                 if (Long.compareUnsigned(pose.timeUs(), last) >= 0) {
-                    poseTimes.put(pose.entity(), pose.timeUs());
+                    entities.put(pose.entity(), pose.timeUs());
                     fresh.add(pose);
                 } else {
                     stale++;
@@ -748,7 +797,7 @@ public final class Link implements AutoCloseable {
                 end("watchdog: nothing heard for " + silent + " ms", true);
                 return;
             }
-            if (now - lastBeat >= cfg.heartbeatMs) {
+            if (now - lastBeat >= heartbeatMs) {
                 lastBeat = now;
                 try {
                     send(new Datagram.Heartbeat());
@@ -789,15 +838,32 @@ public final class Link implements AutoCloseable {
         }
     }
 
-    /** Sends a collision snapshot in as many chunks as it needs; returns its query number. */
+    /**
+     * Queues a collision snapshot, in as many chunks as it needs, and returns its query number. The
+     * chunks go out {@link Wire#COLLISION_PER_POLL} per {@link #poll()}, so a big snapshot never
+     * overflows the receiver's socket buffer; a snapshot queued while an older one still has chunks
+     * waiting replaces them (the receiver would discard the old query anyway).
+     */
     public synchronized int sendCollision(float[] center, float radius, List<float[]> triangles)
             throws WireException {
+        if (!(conn instanceof Live)) throw new WireException("not connected");
         int query = nextQuery;
-        for (Wire.CollisionChunk c : Wire.chunks(query, center, radius, triangles)) {
-            send(new Datagram.CollisionMsg(c));
-        }
+        List<Wire.CollisionChunk> chunks = Wire.chunks(query, center, radius, triangles);
+        collisionQueue.clear();
+        collisionQueue.addAll(chunks);
         nextQuery++;
         return query;
+    }
+
+    /** Sends up to {@link Wire#COLLISION_PER_POLL} queued collision chunks. */
+    private void pumpCollision() {
+        for (int i = 0; i < Wire.COLLISION_PER_POLL && !collisionQueue.isEmpty(); i++) {
+            try {
+                send(new Datagram.CollisionMsg(collisionQueue.poll()));
+            } catch (WireException e) {
+                collisionQueue.clear(); // not connected any more
+            }
+        }
     }
 
     public synchronized void sendFrame(Wire.FrameReady frame) throws WireException {
@@ -816,6 +882,16 @@ public final class Link implements AutoCloseable {
     public synchronized void setFocus(Role focus) throws WireException {
         sendControl(new Control.Input(focus, null));
         if (role == Role.HOST) this.focus = focus;
+    }
+
+    /** Tells the peer about a pixel file (the {@code frame_channel} line of CONTRACT.md section 8). */
+    public synchronized void announceFrames(Control.FrameChannel channel) throws WireException {
+        sendControl(channel);
+    }
+
+    /** Tells the peer about the file a {@link PixelFile.Writer} fills, with the absolute path it was created at. */
+    public synchronized void announceFrames(PixelFile.Writer writer) throws WireException {
+        sendControl(new Control.FrameChannel(writer.path().toAbsolutePath().toString(), writer.width, writer.height, writer.slots));
     }
 
     private void sendControl(Control c) throws WireException {
