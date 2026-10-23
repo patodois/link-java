@@ -23,10 +23,12 @@ implementation of it, tested against the Rust reference peers (`fake_host`, `fak
 | `LinkRunner` | A daemon thread that polls a `Link` and hands events to a listener |
 | `LinkEvent`, `LinkConfig` | What `poll()` reports, and the settings |
 | `Quat` | Quaternion helpers in the link's convention |
+| `PixelFile` | The pixel file: `Reader` (read-only mapping, seqlock, depth plane checks) and `Writer` |
 | `LinkDemo` | A command-line stand-in host or guest, mirroring the Rust `fake_host` / `fake_guest` |
 
-The optional shared-memory pixel channel is parsed (`frame_channel`, `Frame`) but this library does
-not map the file; the consumer does.
+`PixelFile` is the shared-memory pixel channel of CONTRACT 9.6 (revision 3): a `Reader` that maps the
+file read-only, validates it, and copies a slot with the seqlock (colour and the optional linear depth
+plane), and a `Writer` for the sending side. `frame_channel` and `Frame` are parsed by `Link` as usual.
 
 ## Build and test
 

@@ -514,6 +514,8 @@ public final class LinkTests {
             }
         });
 
+        PixelFileTests.run();
+
         System.out.println();
         System.out.println(passed + " passed, " + failed + " failed");
         System.exit(failed == 0 ? 0 : 1);
