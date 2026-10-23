@@ -407,7 +407,7 @@ public final class LinkTests {
                         guest.poll();
                         return host.isConnected() && guest.isConnected();
                     }), "first guest connects");
-                    extra.connect(new InetSocketAddress(InetAddress.getLoopbackAddress(), host.controlPort()));
+                    extra.connect(new InetSocketAddress(InetAddress.getByName("127.0.0.1"), host.controlPort()));
                     extra.setSoTimeout(2000);
                     Thread pump = new Thread(() -> {
                         for (int i = 0; i < 300; i++) {
@@ -439,7 +439,7 @@ public final class LinkTests {
                         {"{\"type\":\"hello\",\"role\":\"host\",\"game\":\"x\",\"protocol\":1,\"min_protocol\":1,\"udp_port\":5,\"heartbeat_ms\":250,\"timeout_ms\":2000}", "role"},
                         {"{\"type\":\"hello\",\"role\":\"guest\",\"game\":\"x\",\"protocol\":9,\"min_protocol\":2,\"udp_port\":5,\"heartbeat_ms\":250,\"timeout_ms\":2000}", "protocol"},
                         {"garbage", "protocol error"}}) {
-                    try (Socket s = new Socket(InetAddress.getLoopbackAddress(), host.controlPort())) {
+                    try (Socket s = new Socket(InetAddress.getByName("127.0.0.1"), host.controlPort())) {
                         s.setSoTimeout(2000);
                         s.getOutputStream().write((c[0] + "\n").getBytes(StandardCharsets.UTF_8));
                         Thread pump = new Thread(() -> {
@@ -468,7 +468,7 @@ public final class LinkTests {
             hc.timeoutMs = 400;
             hc.heartbeatMs = 100;
             try (Link host = Link.host(hc);
-                 Socket s = new Socket(InetAddress.getLoopbackAddress(), host.controlPort())) {
+                 Socket s = new Socket(InetAddress.getByName("127.0.0.1"), host.controlPort())) {
                 // The guest says hello with a heartbeat of 50 ms (effective timeout max(400, 200)) and then goes silent.
                 s.getOutputStream().write(("{\"type\":\"hello\",\"role\":\"guest\",\"game\":\"mute\",\"protocol\":1,"
                         + "\"min_protocol\":1,\"udp_port\":9,\"heartbeat_ms\":50,\"timeout_ms\":400}\n").getBytes(StandardCharsets.UTF_8));
@@ -500,7 +500,7 @@ public final class LinkTests {
                 LinkConfig gc = new LinkConfig("G");
                 gc.controlPort = host.controlPort();
                 try (Link guest = Link.guest(gc);
-                     java.net.DatagramSocket stranger = new java.net.DatagramSocket(0, InetAddress.getLoopbackAddress())) {
+                     java.net.DatagramSocket stranger = new java.net.DatagramSocket(0, InetAddress.getByName("127.0.0.1"))) {
                     check(until(3000, () -> {
                         host.poll();
                         guest.poll();
@@ -508,7 +508,7 @@ public final class LinkTests {
                     }), "connect");
                     byte[] b = Wire.encode(new Header(1, 0, host.peer().session(), 1, Wire.nowUs()),
                             new Datagram.PoseMsg(Collections.singletonList(Wire.Pose.identity(1, Wire.nowUs()))));
-                    stranger.send(new java.net.DatagramPacket(b, b.length, InetAddress.getLoopbackAddress(), host.udpPort()));
+                    stranger.send(new java.net.DatagramPacket(b, b.length, InetAddress.getByName("127.0.0.1"), host.udpPort()));
                     Thread.sleep(50);
                     List<LinkEvent> ev = host.poll();
                     check(ev.stream().noneMatch(e -> e instanceof LinkEvent.Poses), "stranger's pose ignored");

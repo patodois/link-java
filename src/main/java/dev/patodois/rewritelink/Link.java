@@ -34,7 +34,20 @@ import dev.patodois.rewritelink.Wire.WireException;
  */
 public final class Link implements AutoCloseable {
     private static final long CONNECT_TIMEOUT_MS = 1000;
-    private static final InetAddress LOOPBACK = InetAddress.getLoopbackAddress();
+    /**
+     * 127.0.0.1 itself, as the contract requires. {@code InetAddress.getLoopbackAddress()} is
+     * {@code ::1} when the JVM runs with {@code -Djava.net.preferIPv6Addresses=system} (as the
+     * NeoForge and Forge launchers do), and a 127.0.0.1 peer then never connects.
+     */
+    private static final InetAddress LOOPBACK = ipv4Loopback();
+
+    private static InetAddress ipv4Loopback() {
+        try {
+            return InetAddress.getByAddress("localhost", new byte[] {127, 0, 0, 1});
+        } catch (java.net.UnknownHostException e) {
+            throw new AssertionError("a 4-byte address is always valid", e);
+        }
+    }
 
     private final Role role;
     private final LinkConfig cfg;

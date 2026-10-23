@@ -38,8 +38,18 @@ tasks.register('linkTests', JavaExec) {
 	mainClass = 'dev.patodois.rewritelink.LinkTests'
 	maxHeapSize = '256m'
 }
+// The same tests in a JVM that prefers IPv6, as the NeoForge and Forge launchers start the game:
+// the link must still bind and connect to 127.0.0.1, not ::1
+tasks.register('linkTestsPreferIpv6', JavaExec) {
+	group = 'verification'
+	description = 'Runs LinkTests with -Djava.net.preferIPv6Addresses=system'
+	classpath = sourceSets.test.runtimeClasspath
+	mainClass = 'dev.patodois.rewritelink.LinkTests'
+	maxHeapSize = '256m'
+	jvmArgs '-Djava.net.preferIPv6Addresses=system'
+}
 tasks.named('test') { enabled = false } // there is no JUnit; linkTests replaces it
-tasks.named('check') { dependsOn 'linkTests' }
+tasks.named('check') { dependsOn 'linkTests', 'linkTestsPreferIpv6' }
 
 // `./gradlew demo --args="guest --port 47800 --orbit"` runs the command-line peer.
 tasks.register('demo', JavaExec) {
