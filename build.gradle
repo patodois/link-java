@@ -1,0 +1,56 @@
+plugins {
+	id 'java-library'
+	id 'maven-publish'
+}
+
+// Pure Java, no dependencies. Release 21 because the code uses pattern matching for switch
+// (final in Java 21) together with sealed interfaces and records. Any game whose runtime is
+// Java 21 or newer can embed this jar.
+tasks.withType(JavaCompile).configureEach {
+	options.release = 21
+	options.encoding = 'UTF-8'
+	options.compilerArgs << '-Xlint:all'
+}
+
+java {
+	withSourcesJar()
+}
+
+jar {
+	archiveBaseName = 'link-java'
+	manifest {
+		attributes 'Implementation-Title': 'link-java', 'Implementation-Version': project.version
+	}
+	from('LICENSE-MIT') { rename { "${it}_link-java" } }
+	from('LICENSE-APACHE') { rename { "${it}_link-java" } }
+}
+
+// The tests are a plain runner with a main method (no JUnit, no dependencies): they encode and
+// decode the contract's worked example, check every layout offset, fuzz the decoder and run live
+// sessions on loopback. The runner exits non-zero if anything fails, which fails the build.
+tasks.register('linkTests', JavaExec) {
+	group = 'verification'
+	description = 'Runs dev.patodois.rewritelink.LinkTests'
+	classpath = sourceSets.test.runtimeClasspath
+	mainClass = 'dev.patodois.rewritelink.LinkTests'
+	maxHeapSize = '256m'
+}
+tasks.named('test') { enabled = false } // there is no JUnit; linkTests replaces it
+tasks.named('check') { dependsOn 'linkTests' }
+
+// `./gradlew demo --args="guest --port 47800 --orbit"` runs the command-line peer.
+tasks.register('demo', JavaExec) {
+	group = 'application'
+	description = 'Runs LinkDemo (a stand-in host or guest, mirrors the Rust fake_host / fake_guest)'
+	classpath = sourceSets.main.runtimeClasspath
+	mainClass = 'dev.patodois.rewritelink.LinkDemo'
+	maxHeapSize = '128m'
+}
+
+publishing {
+	publications {
+		create('mavenJava', MavenPublication) {
+			from components.java
+		}
+	}
+}
