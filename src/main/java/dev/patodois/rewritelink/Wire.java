@@ -51,7 +51,11 @@ public final class Wire {
         }
     }
 
-    /** Microseconds since the Unix epoch, wall clock. */
+    /**
+     * Microseconds since the Unix epoch, wall clock. {@code Instant.now()} has microsecond resolution
+     * on Java 9 and later and millisecond resolution on Java 8 (the value is then a multiple of 1000,
+     * which the contract allows).
+     */
     public static long nowUs() {
         java.time.Instant i = java.time.Instant.now();
         return i.getEpochSecond() * 1_000_000L + i.getNano() / 1000;
