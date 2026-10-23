@@ -7,8 +7,10 @@ import java.nio.LongBuffer;
 import java.nio.channels.FileChannel;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
+import java.nio.file.LinkOption;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
+import java.nio.file.attribute.BasicFileAttributes;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.Objects;
 
@@ -27,7 +29,8 @@ public final class PixelFile {
     public static final int FORMAT_RGBA8 = 1;
     public static final int DEPTH_NONE = 0;
     public static final int DEPTH_LINEAR_F32 = 1;
-    private static final int MAX_DIM = 1 << 15;
+    /** Largest width or height (CONTRACT.md 9.6); a colour plane of 16384 x 16384 is 1 GiB. */
+    private static final int MAX_DIM = Wire.MAX_FRAME_DIM;
 
     // ------------------------------------------------------------------ the seqlock on Java 8
     //
@@ -158,6 +161,7 @@ public final class PixelFile {
     /** Maps a pixel file read-only. Not thread-safe: use one reader per thread. */
     public static final class Reader implements AutoCloseable {
         private final FileChannel channel;
+        private final long mapped; // the file length that was mapped
         private final ByteBuffer map;
         private final LongBuffer locks; // the same mapping as 64-bit words: slot lock i is word (slot start) / 8
         public final int slots, width, height, stride;
@@ -167,11 +171,12 @@ public final class PixelFile {
         private final long depthOffset;
 
         // Diagnostics for the tests: why read() returned null. Not synchronized.
-        long skippedBusy, skippedOtherFrame, skippedOverwritten;
+        long skippedBusy, skippedOtherFrame, skippedOverwritten, skippedGone;
 
-        private Reader(FileChannel channel, ByteBuffer map, int slots, int width, int height, int stride, long slotSize, int depthFormat,
+        private Reader(FileChannel channel, long mapped, ByteBuffer map, int slots, int width, int height, int stride, long slotSize, int depthFormat,
                        int depthStride, long depthOffset) {
             this.channel = channel;
+            this.mapped = mapped;
             this.map = map;
             this.locks = map.asLongBuffer();
             this.slots = slots;
@@ -184,18 +189,42 @@ public final class PixelFile {
             this.depthOffset = depthOffset;
         }
 
+        /**
+         * True when the file is now shorter than the mapping made of it (the peer truncated it), or
+         * the reader is closed. {@link #read} then returns null without touching the mapping, which
+         * would fault. This narrows the window but cannot close it: a truncation between the check
+         * and the copy still faults (as an {@link InternalError} on HotSpot). A correct sender never
+         * truncates a pixel file; this guards against a broken or hostile one.
+         */
+        public boolean isGone() {
+            try {
+                return channel.size() < mapped;
+            } catch (IOException e) {
+                return true;
+            }
+        }
+
         /** True when the file carries a depth plane this reader understands (linear f32 metres). */
         public boolean hasDepth() {
             return depthFormat == DEPTH_LINEAR_F32;
         }
 
         /**
-         * Opens and checks the file as section 9.6 says. A {@code depth_format} the reader does not
-         * know is not an error: the file is read as colour only.
+         * Opens and checks the file as section 9.6 says: the path must be absolute and name a regular
+         * file (a symlink, FIFO, device or directory is refused), {@code width} and {@code height}
+         * are 1 to 16384, {@code stride} is {@code width * 4}, and all size arithmetic is checked
+         * for overflow. A {@code depth_format} the reader does not know is not an error: the file
+         * is read as colour only.
+         *
+         * <p>The type is checked before the file is opened, because opening a FIFO for reading
+         * waits for a writer for ever and Java has no non-blocking open; a peer that swaps the file
+         * for a FIFO between the check and the open can still stall this call (the contract asks for
+         * {@code O_NONBLOCK} where the language has it).
          */
         public static Reader open(Path path) throws IOException {
             if (!path.isAbsolute()) throw new FormatException("the pixel file path is not absolute: " + path);
-            if (!Files.isRegularFile(path)) throw new FormatException("not a regular file: " + path);
+            BasicFileAttributes attrs = Files.readAttributes(path, BasicFileAttributes.class, LinkOption.NOFOLLOW_LINKS);
+            if (!attrs.isRegularFile()) throw new FormatException("not a regular file: " + path);
             FileChannel ch = FileChannel.open(path, StandardOpenOption.READ);
             try {
                 long size = ch.size();
@@ -216,20 +245,28 @@ public final class PixelFile {
                 if (w < 1 || h < 1 || w > MAX_DIM || h > MAX_DIM) throw new FormatException("size " + w + "x" + h);
                 if (format != FORMAT_RGBA8) throw new FormatException("pixel format " + format);
                 if (stride != w * 4) throw new FormatException("stride " + stride + " is not width * 4");
-                long colourEnd = SLOT_HEADER_LEN + (long) stride * h;
-                if (slotSize % 64 != 0 || slotSize < colourEnd) throw new FormatException("slot_size " + slotSize);
-                if (HEADER_LEN + slots * slotSize > size) throw new FormatException("file is shorter than its slots");
                 int depthFormat = m.getInt(40);
                 int depthStride = m.getInt(44);
                 long depthOffset = m.getLong(48);
-                if (depthFormat == DEPTH_LINEAR_F32) {
-                    if (depthStride != w * 4) throw new FormatException("depth_stride " + depthStride);
-                    if (depthOffset % 64 != 0 || depthOffset < colourEnd) throw new FormatException("depth_offset " + depthOffset);
-                    if (depthOffset + (long) depthStride * h > slotSize) throw new FormatException("depth plane outside its slot");
-                } else if (depthFormat != DEPTH_NONE) {
-                    depthFormat = DEPTH_NONE; // unknown format: colour only
+                try {
+                    // The sizes come from the file, so none of them is trusted: a slot_size picked so
+                    // that slots * slot_size wraps would pass an unchecked length test.
+                    long colourEnd = Math.addExact((long) SLOT_HEADER_LEN, Math.multiplyExact((long) stride, (long) h));
+                    if (slotSize % 64 != 0 || slotSize < colourEnd) throw new FormatException("slot_size " + slotSize);
+                    long need = Math.addExact((long) HEADER_LEN, Math.multiplyExact((long) slots, slotSize));
+                    if (need > size) throw new FormatException("file is shorter than its slots");
+                    if (depthFormat == DEPTH_LINEAR_F32) {
+                        if (depthStride != w * 4) throw new FormatException("depth_stride " + depthStride);
+                        if (depthOffset % 64 != 0 || depthOffset < colourEnd) throw new FormatException("depth_offset " + depthOffset);
+                        long planeEnd = Math.addExact(depthOffset, Math.multiplyExact((long) depthStride, (long) h));
+                        if (planeEnd > slotSize) throw new FormatException("depth plane outside its slot");
+                    } else if (depthFormat != DEPTH_NONE) {
+                        depthFormat = DEPTH_NONE; // unknown format: colour only
+                    }
+                } catch (ArithmeticException overflow) {
+                    throw new FormatException("the sizes in the pixel file header overflow");
                 }
-                return new Reader(ch, m, slots, w, h, stride, slotSize, depthFormat, depthStride, depthOffset);
+                return new Reader(ch, size, m, slots, w, h, stride, slotSize, depthFormat, depthStride, depthOffset);
             } catch (IOException | RuntimeException e) {
                 ch.close();
                 throw e;
@@ -242,6 +279,10 @@ public final class PixelFile {
          */
         public Frame read(long frame, int slot, boolean wantDepth) {
             if (slot < 0 || slot >= slots) return null;
+            if (isGone()) {
+                skippedGone++;
+                return null;
+            }
             int base = (int) (HEADER_LEN + (long) slot * slotSize);
             long l1 = locks.get(base >> 3); // step 1: l1 = lock, then the acquire (see "the seqlock on Java 8")
             fence();
@@ -290,7 +331,20 @@ public final class PixelFile {
 
     // ------------------------------------------------------------------ writer
 
-    /** Creates and fills a pixel file (the sending side). Deletes the file on {@link #close()}. */
+    /**
+     * Creates and fills a pixel file (the sending side). The file is created exclusively
+     * ({@code CREATE_NEW}: the path must not exist), is never truncated or resized, and is deleted by
+     * {@link #close()}. Writers are thread-safe, but one thread should do the writing.
+     *
+     * <p><b>Windows:</b> a mapped file cannot be deleted while this process maps it. {@link #close()}
+     * therefore unmaps the buffer first, which Java offers no public way to do; it uses
+     * {@code sun.misc.Unsafe.invokeCleaner} on Java 9 and later and the buffer's internal cleaner on
+     * Java 8, both by reflection. On a JVM where neither works the mapping lives until garbage
+     * collection, the delete fails quietly, and the file outlives the writer on Windows (the temp
+     * directory's cleanup then removes it). Elsewhere the delete always works. JDK 24 and later print
+     * one warning about {@code sun.misc.Unsafe::invokeCleaner} on stderr at the first close
+     * ({@code --sun-misc-unsafe-memory-access=allow} silences it).
+     */
     public static final class Writer implements AutoCloseable {
         private final Path path;
         private final FileChannel channel;
@@ -301,9 +355,12 @@ public final class PixelFile {
         private final boolean depth;
         private final long depthOffset;
         private long frameNo;
+        private boolean closed;
+        private boolean unmapped;
 
         public Writer(Path path, int width, int height, int slots, boolean withDepth) throws IOException {
             if (slots < 1 || slots > 16 || width < 1 || height < 1) throw new IllegalArgumentException("bad pixel file size");
+            if (width > MAX_DIM || height > MAX_DIM) throw new IllegalArgumentException("width and height are at most " + MAX_DIM);
             this.path = path;
             this.width = width;
             this.height = height;
@@ -313,9 +370,25 @@ public final class PixelFile {
             long colourEnd = SLOT_HEADER_LEN + (long) stride * height;
             this.depthOffset = withDepth ? roundUp64(colourEnd) : 0;
             this.slotSize = roundUp64(withDepth ? depthOffset + (long) width * 4 * height : colourEnd);
-            long total = HEADER_LEN + slots * slotSize;
+            long total;
+            try {
+                total = Math.addExact((long) HEADER_LEN, Math.multiplyExact((long) slots, slotSize));
+            } catch (ArithmeticException e) {
+                throw new IllegalArgumentException("the pixel file size overflows");
+            }
+            if (total > Integer.MAX_VALUE) {
+                throw new IllegalArgumentException("a pixel file of " + total + " bytes is over the 2 GiB a Java mapping holds");
+            }
             this.channel = FileChannel.open(path, StandardOpenOption.CREATE_NEW, StandardOpenOption.READ, StandardOpenOption.WRITE);
-            this.map = channel.map(FileChannel.MapMode.READ_WRITE, 0, total);
+            java.nio.MappedByteBuffer m;
+            try {
+                m = channel.map(FileChannel.MapMode.READ_WRITE, 0, total);
+            } catch (IOException | RuntimeException e) {
+                channel.close();
+                Files.deleteIfExists(path);
+                throw e;
+            }
+            this.map = m;
             map.order(ByteOrder.LITTLE_ENDIAN);
             this.locks = map.asLongBuffer(); // after order(): the view has the same byte order
             map.duplicate().put(new byte[] {'R', 'B', 'F', 'R', 'A', 'M', 'E', 0}); // relative put at 0: the absolute bulk put is Java 13
@@ -332,8 +405,29 @@ public final class PixelFile {
             return path;
         }
 
-        /** Writes the next frame (the first is number 1) and returns its number; its slot is {@code frame % slots}. */
-        public long write(byte[] rgba, float[] linearDepth, int w, int h, int cameraSeq, long timeUs) {
+        /**
+         * Writes the next frame (the first is number 1) and returns its number; its slot is
+         * {@code frame % slots}.
+         *
+         * @param rgba tightly packed rows, exactly {@code w * h * 4} bytes
+         * @param linearDepth {@code w * h} values in the same row order, or null for "nothing here"
+         *        everywhere ({@code +inf}); must be null in a file without a depth plane
+         * @throws IllegalArgumentException if {@code w} or {@code h} is below 1 or above the file's,
+         *         or an array has the wrong length. Nothing is written and no frame number is used.
+         * @throws IllegalStateException after {@link #close()}
+         */
+        public synchronized long write(byte[] rgba, float[] linearDepth, int w, int h, int cameraSeq, long timeUs) {
+            if (closed) throw new IllegalStateException("the pixel file writer is closed");
+            if (w < 1 || h < 1 || w > width || h > height) {
+                throw new IllegalArgumentException("a " + w + "x" + h + " frame does not fit a " + width + "x" + height + " pixel file");
+            }
+            if (rgba == null || rgba.length != (long) w * h * 4) {
+                throw new IllegalArgumentException("rgba length is not width * height * 4 (" + (long) w * h * 4 + ")");
+            }
+            if (linearDepth != null) {
+                if (!depth) throw new IllegalArgumentException("the pixel file has no depth plane");
+                if (linearDepth.length != w * h) throw new IllegalArgumentException("depth length is not width * height (" + w * h + ")");
+            }
             long frame = ++frameNo;
             int slot = (int) (frame % slots);
             int base = (int) (HEADER_LEN + slot * slotSize);
@@ -341,32 +435,90 @@ public final class PixelFile {
             long lock = locks.get(word); // only this writer changes it
             locks.put(word, lock + 1); // step 1: odd, then the release fence
             fence();
-            map.putLong(base + 8, frame).putLong(base + 16, timeUs).putInt(base + 24, cameraSeq).putInt(base + 28, w).putInt(base + 32, h);
-            ByteBuffer dst = map.duplicate(); // a private position for the bulk copies
-            for (int y = 0; y < h; y++) {
-                dst.position(base + SLOT_HEADER_LEN + y * stride);
-                dst.put(rgba, y * w * 4, w * 4);
-            }
-            if (depth) {
+            boolean complete = false;
+            try {
+                map.putLong(base + 8, frame).putLong(base + 16, timeUs).putInt(base + 24, cameraSeq).putInt(base + 28, w).putInt(base + 32, h);
+                ByteBuffer dst = map.duplicate(); // a private position for the bulk copies
                 for (int y = 0; y < h; y++) {
-                    int row = (int) (base + depthOffset + (long) y * width * 4);
-                    for (int x = 0; x < w; x++) map.putFloat(row + x * 4, linearDepth == null ? Float.POSITIVE_INFINITY : linearDepth[y * w + x]);
+                    dst.position(base + SLOT_HEADER_LEN + y * stride);
+                    dst.put(rgba, y * w * 4, w * 4);
                 }
+                if (depth) {
+                    for (int y = 0; y < h; y++) {
+                        int row = (int) (base + depthOffset + (long) y * width * 4);
+                        for (int x = 0; x < w; x++) map.putFloat(row + x * 4, linearDepth == null ? Float.POSITIVE_INFINITY : linearDepth[y * w + x]);
+                    }
+                }
+                complete = true;
+            } finally {
+                // Whatever happened, the lock ends even; a slot that was not completed claims no frame.
+                if (!complete) map.putLong(base + 8, 0L);
+                fence(); // the data stores before the even store (release)
+                locks.put(word, lock + 2); // step 3: even again
+                fence(); // out before the caller sends the Frame datagram
             }
-            fence(); // the data stores before the even store (release)
-            locks.put(word, lock + 2); // step 3: even again
-            fence(); // out before the caller sends the Frame datagram
             return frame;
         }
 
+        /** Unmaps the file (see the class comment), closes it and deletes it. Closing twice is harmless. */
         @Override
-        public void close() {
+        public synchronized void close() {
+            if (closed) return;
+            closed = true;
             try {
                 channel.close();
-                Files.deleteIfExists(path);
             } catch (IOException ignored) {
                 // nothing to do
             }
+            unmapped = unmap(map);
+            try {
+                Files.deleteIfExists(path);
+            } catch (IOException ignored) {
+                // On Windows with a mapping that could not be released: the file outlives the writer.
+            }
+        }
+
+        /** Whether {@link #close()} managed to unmap the buffer (always false before it is called). */
+        public synchronized boolean wasUnmapped() {
+            return unmapped;
+        }
+    }
+
+    /**
+     * Releases a mapped buffer now instead of at garbage collection, which Windows needs before it
+     * deletes the file. Java has no public API for it: Java 9 and later have
+     * {@code sun.misc.Unsafe.invokeCleaner(ByteBuffer)}, Java 8 has
+     * {@code ((sun.nio.ch.DirectBuffer) buffer).cleaner().clean()}. Both are reached by reflection, so
+     * this compiles everywhere and quietly returns false where neither exists. The buffer must not be
+     * used afterwards. Pass the original mapped buffer: a duplicate or slice is refused.
+     */
+    static boolean unmap(ByteBuffer buffer) {
+        if (buffer == null || !buffer.isDirect()) return false;
+        try {
+            Class<?> unsafeClass = Class.forName("sun.misc.Unsafe");
+            java.lang.reflect.Field theUnsafe = unsafeClass.getDeclaredField("theUnsafe");
+            theUnsafe.setAccessible(true);
+            Object unsafe = theUnsafe.get(null);
+            java.lang.reflect.Method invokeCleaner;
+            try {
+                invokeCleaner = unsafeClass.getMethod("invokeCleaner", ByteBuffer.class); // Java 9+
+            } catch (NoSuchMethodException java8) {
+                invokeCleaner = null;
+            }
+            if (invokeCleaner != null) {
+                invokeCleaner.invoke(unsafe, buffer);
+                return true;
+            }
+            java.lang.reflect.Method cleanerOf = buffer.getClass().getMethod("cleaner"); // Java 8
+            cleanerOf.setAccessible(true);
+            Object cleaner = cleanerOf.invoke(buffer);
+            if (cleaner == null) return false;
+            java.lang.reflect.Method clean = cleaner.getClass().getMethod("clean");
+            clean.setAccessible(true);
+            clean.invoke(cleaner);
+            return true;
+        } catch (Throwable t) { // reflection failures, a refused duplicate, a JVM without these classes
+            return false;
         }
     }
 }

@@ -84,6 +84,81 @@ final class ReviewTests {
     }
 
     static void run(String[] args) throws Exception {
+        // ----- J2: slots * slot_size wrapped in 64 bits and passed the file-length check
+        test("review M4 (J2): a slot_size that makes slots * slot_size wrap is refused", () -> {
+            long s = java.math.BigInteger.ONE.shiftLeft(64).add(java.math.BigInteger.valueOf(128))
+                    .divide(java.math.BigInteger.valueOf(3)).longValue();
+            eq(3 * s, 128L, "the product wraps to 128, inside the 4096-byte file");
+            eq(s % 64, 0L, "and it is a multiple of 64, so no other check refuses it");
+            check(refused(headerOnly("wrap.frames", 3, 1, 1, 4, s, 4096)), "slot_size " + s + " must be refused");
+        });
+
+        // ----- M4 (Java half): the dimension limit is 16384, not 32768
+        test("review M4: width or height above 16384 is refused, 16384 is not", () -> {
+            for (int[] wh : new int[][] {{16385, 1}, {1, 16385}, {32768, 1}, {1, 32768}}) {
+                int stride = wh[0] * 4;
+                long slot = (64L + (long) stride * wh[1] + 63) & ~63L;
+                Path p = headerOnly("dim.frames", 1, wh[0], wh[1], stride, slot, 64 + slot);
+                check(refused(p), wh[0] + "x" + wh[1] + " must be refused");
+            }
+            int stride = 16384 * 4;
+            Path ok = headerOnly("dim-ok.frames", 1, 16384, 1, stride, (64L + stride + 63) & ~63L, 64 + ((64L + stride + 63) & ~63L));
+            check(!refused(ok), "16384 x 1 is fine");
+            try (PixelFile.Reader r = PixelFile.Reader.open(ok)) {
+                eq(r.width, 16384, "width");
+            }
+        });
+
+        test("review M4: the writer stops at 16384 too", () -> {
+            boolean threw = false;
+            try {
+                new PixelFile.Writer(temp("big.frames"), 16385, 1, 1, false).close();
+            } catch (IllegalArgumentException e) {
+                threw = true;
+            }
+            check(threw, "a writer of 16385 x 1 must be refused");
+        });
+
+        test("pixel file: stride must be exactly width * 4", () -> {
+            long slot = 192;
+            Path p = headerOnly("stride.frames", 1, 4, 4, 20, slot, 64 + slot);
+            check(refused(p), "stride 20 for width 4");
+        });
+
+        // ----- M3: a symlink is not a regular file
+        test("review M3: a symlink to a pixel file is refused", () -> {
+            if (!unix()) return;
+            Path real = temp("real.frames");
+            try (PixelFile.Writer w = new PixelFile.Writer(real, 4, 4, 2, false)) {
+                Path link = temp("link.frames");
+                Files.createSymbolicLink(link, real);
+                check(refused(link), "a symlink to " + w.path() + " must be refused");
+                try (PixelFile.Reader r = PixelFile.Reader.open(real)) {
+                    check(r != null, "the file itself opens");
+                }
+            }
+        });
+
+        // ----- Truncation under a mapped reader (Rv3), in a child JVM so a crash cannot take the runner down
+        test("review M5: a pixel file truncated under a reader is gone, not a crash", () -> {
+            Path p = temp("trunc.frames");
+            List<String> cmd = new ArrayList<>();
+            cmd.add(System.getProperty("java.home") + "/bin/java");
+            cmd.add("-cp");
+            cmd.add(System.getProperty("java.class.path"));
+            cmd.add("dev.patodois.rewritelink.ReviewTests");
+            cmd.add("truncate");
+            cmd.add(p.toString());
+            Process proc = new ProcessBuilder(cmd).redirectErrorStream(true).start();
+            StringBuilder out = new StringBuilder();
+            try (BufferedReader r = new BufferedReader(new InputStreamReader(proc.getInputStream(), StandardCharsets.UTF_8))) {
+                String line;
+                while ((line = r.readLine()) != null) out.append(line).append('\n');
+            }
+            int code = proc.waitFor();
+            check(code == 0 && out.indexOf("RESULT null") >= 0, "child exit " + code + ": " + out);
+        });
+
         // ----- L5: equals and hashCode compare array contents
         test("review L5: Camera, Pose and Decoded are equal when their arrays are", () -> {
             Wire.Camera c = Wire.Camera.lookAt(new float[] {0, 0, 5}, new float[] {0, 0, 0}, 1f, 0.1f, 100f, 640, 480);
@@ -127,6 +202,39 @@ final class ReviewTests {
             check(threw, "frame 0 must not encode");
         });
 
+        // ----- L4: the writer validates its arguments and never leaves the lock odd
+        test("review L4: a bad write is refused and leaves the slot lock even and the frame number unused", () -> {
+            Path p = temp("w.frames");
+            try (PixelFile.Writer w = new PixelFile.Writer(p, 4, 2, 3, true)) {
+                byte[] ok = new byte[4 * 2 * 4];
+                float[] okd = new float[8];
+                Object[][] bad = {
+                    {new byte[5], okd, 4, 2},          // short colour array
+                    {ok, new float[3], 4, 2},          // short depth array
+                    {new byte[5 * 2 * 4], new float[10], 5, 2}, // wider than the file
+                    {new byte[4 * 3 * 4], new float[12], 4, 3}, // taller than the file
+                    {new byte[0], new float[0], 0, 0},   // empty
+                    {ok, okd, -1, 2},
+                };
+                for (Object[] a : bad) {
+                    boolean threw = false;
+                    try {
+                        w.write((byte[]) a[0], (float[]) a[1], (Integer) a[2], (Integer) a[3], 0, 1L);
+                    } catch (IllegalArgumentException e) {
+                        threw = true;
+                    } catch (RuntimeException e) {
+                        threw = false;
+                    }
+                    check(threw, "IllegalArgumentException for " + a[2] + "x" + a[3] + " with " + ((byte[]) a[0]).length + " bytes");
+                }
+                ByteBuffer raw = ByteBuffer.wrap(Files.readAllBytes(p)).order(ByteOrder.LITTLE_ENDIAN);
+                for (int slot = 0; slot < 3; slot++) {
+                    eq(raw.getLong((int) (64 + slot * w.slotSize)) & 1, 0L, "slot " + slot + " lock is even");
+                }
+                eq(w.write(ok, okd, 4, 2, 0, 1L), 1L, "the refused writes used no frame number");
+            }
+        });
+
         // ----- L7: Json is as strict as serde_json
         test("review L7: the JSON reader accepts and rejects what serde_json does", () -> {
             for (Object[] row : JSON_CORPUS) {
@@ -160,6 +268,26 @@ final class ReviewTests {
                     check(got == (n <= 127), "nesting " + n + " is " + (n <= 127 ? "accepted" : "rejected") + " by serde_json");
                 }
             }
+        });
+
+        // ----- L3
+        test("review L3: closing a writer unmaps its file before deleting it, and a closed writer refuses writes", () -> {
+            Path p = temp("close.frames");
+            PixelFile.Writer w = new PixelFile.Writer(p, 4, 2, 2, false);
+            w.write(new byte[32], null, 4, 2, 0, 1L);
+            check(!w.wasUnmapped(), "mapped while open");
+            w.close();
+            check(w.wasUnmapped(), "the mapping was released on this JVM (java.version " + System.getProperty("java.version") + ")");
+            check(!Files.exists(p), "deleted");
+            boolean threw = false;
+            try {
+                w.write(new byte[32], null, 4, 2, 0, 1L);
+            } catch (IllegalStateException e) {
+                threw = true;
+            }
+            check(threw, "a write after close must not touch the unmapped buffer");
+            w.close(); // twice is fine
+            check(!PixelFile.unmap(ByteBuffer.allocate(8)), "a heap buffer cannot be unmapped");
         });
 
 
