@@ -10,7 +10,7 @@ import java.nio.ByteOrder;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.HexFormat;
+import java.util.Collections;
 import java.util.List;
 import java.util.function.BooleanSupplier;
 
@@ -52,7 +52,10 @@ public final class LinkTests {
     }
 
     static byte[] hex(String s) {
-        return HexFormat.of().parseHex(s.replace(" ", ""));
+        String h = s.replace(" ", "");
+        byte[] out = new byte[h.length() / 2];
+        for (int i = 0; i < out.length; i++) out[i] = (byte) Integer.parseInt(h.substring(2 * i, 2 * i + 2), 16);
+        return out;
     }
 
     static ByteBuffer le(byte[] b) {
@@ -136,7 +139,7 @@ public final class LinkTests {
             Wire.Pose p = new Wire.Pose(0xFFFFFFFEL, Wire.POSE_TELEPORT, 1_700_000_000_123_456L,
                     new float[] {1, 2, 3}, new float[] {0, 0.5f, 0, 0.5f}, new float[] {1, 1, 2},
                     new float[] {4, 5, 6}, new float[] {7, 8, 9});
-            byte[] b = Wire.encode(new Header(1, 0, 7, 1, 2), new Datagram.PoseMsg(List.of(p, p)));
+            byte[] b = Wire.encode(new Header(1, 0, 7, 1, 2), new Datagram.PoseMsg(Arrays.asList(p, p)));
             eq(b.length, 24 + 8 + 160, "two poses");
             ByteBuffer bb = le(b);
             eq(bb.getInt(24), 2, "count");
@@ -161,7 +164,7 @@ public final class LinkTests {
             byte[] b = Wire.encode(new Header(1, 0, 1, 0, 0), new Datagram.PoseMsg(ps));
             eq(b.length, 8192, "full pose datagram");
             expectWireError(() -> Wire.encode(new Header(1, 0, 1, 0, 0),
-                    new Datagram.PoseMsg(List.of())), "zero poses");
+                    new Datagram.PoseMsg(Collections.<Wire.Pose>emptyList())), "zero poses");
         });
 
         test("collision: chunking, offsets and exact length", () -> {
@@ -180,7 +183,7 @@ public final class LinkTests {
             eq(bb.getFloat(32), 1f, "center.x");
             eq(bb.getFloat(44), 10f, "radius");
             eq(bb.getInt(48), 800 - 3 * 226, "triangle_count");
-            eq(Wire.chunks(1, new float[3], 1f, List.of()).size(), 1, "empty snapshot is one chunk");
+            eq(Wire.chunks(1, new float[3], 1f, Collections.<float[]>emptyList()).size(), 1, "empty snapshot is one chunk");
             Wire.CollisionChunk back = ((Datagram.CollisionMsg) Wire.decode(b, b.length).body()).chunk();
             check(Arrays.equals(back.triangles().get(0), chunks.get(3).triangles().get(0)), "triangle round trip");
         });
@@ -210,7 +213,7 @@ public final class LinkTests {
             byte[] badDepth = cam.clone();
             badDepth[24 + 148] = 3;
             expectWireError(() -> Wire.decode(badDepth, badDepth.length), "depth_range 3");
-            byte[] pose = Wire.encode(new Header(1, 0, 1, 0, 0), new Datagram.PoseMsg(List.of(Wire.Pose.identity(1, 1))));
+            byte[] pose = Wire.encode(new Header(1, 0, 1, 0, 0), new Datagram.PoseMsg(Collections.singletonList(Wire.Pose.identity(1, 1))));
             byte[] count0 = pose.clone();
             count0[24] = 0;
             expectWireError(() -> Wire.decode(count0, count0.length), "pose count 0");
@@ -293,7 +296,7 @@ public final class LinkTests {
             eq(Control.parse("{\"type\":\"despawn\",\"entity\":7,\"extra\":[1,{\"a\":null}]}"), new Control.Despawn(7),
                     "unknown fields ignored");
             // Round trips through the line writer.
-            for (Control c : List.of(g, h, new Control.Spawn(1, "a\"b", "c\\d\n", null), new Control.Despawn(4294967295L),
+            for (Control c : Arrays.asList(g, h, new Control.Spawn(1, "a\"b", "c\\d\n", null), new Control.Despawn(4294967295L),
                     new Control.Input(Role.HOST, "why"), new Control.Bye("é ü 日本"))) {
                 String line = c.toLine();
                 check(line.endsWith("\n") && line.indexOf('\n') == line.length() - 1, "one line");
@@ -302,7 +305,7 @@ public final class LinkTests {
         });
 
         test("control: broken lines are protocol errors", () -> {
-            for (String bad : List.of("not json", "[]", "{\"no\":\"type\"}", "{\"type\":5}",
+            for (String bad : Arrays.asList("not json", "[]", "{\"no\":\"type\"}", "{\"type\":5}",
                     "{\"type\":\"despawn\"}", "{\"type\":\"despawn\",\"entity\":4294967296}",
                     "{\"type\":\"despawn\",\"entity\":-1}", "{\"type\":\"despawn\",\"entity\":1.5}",
                     "{\"type\":\"input\",\"focus\":\"both\"}",
@@ -340,7 +343,7 @@ public final class LinkTests {
                     guest.spawn(new Control.Spawn(9, "Test", "demo/cube", "Cube"));
                     Wire.Pose pose = Wire.Pose.identity(9, Wire.nowUs());
                     pose.translation()[0] = 42;
-                    guest.sendPoses(List.of(pose));
+                    guest.sendPoses(Collections.singletonList(pose));
                     check(until(2000, () -> {
                         hostEvents.addAll(host.poll());
                         guestEvents.addAll(guest.poll());
@@ -349,12 +352,12 @@ public final class LinkTests {
                                 && hostEvents.stream().anyMatch(e -> e instanceof LinkEvent.Spawn);
                     }), "camera, spawn and pose arrive");
                     LinkEvent.Poses got = (LinkEvent.Poses) hostEvents.stream()
-                            .filter(e -> e instanceof LinkEvent.Poses).findFirst().orElseThrow();
+                            .filter(e -> e instanceof LinkEvent.Poses).findFirst().get();
                     eq(got.poses().get(0).translation()[0], 42f, "pose x");
 
                     // A stale pose (older time) is dropped.
                     Wire.Pose old = Wire.Pose.identity(9, pose.timeUs() - 1000);
-                    guest.sendPoses(List.of(old));
+                    guest.sendPoses(Collections.singletonList(old));
                     Thread.sleep(50);
                     hostEvents.clear();
                     hostEvents.addAll(host.poll());
@@ -362,7 +365,7 @@ public final class LinkTests {
 
                     // Focus: the guest asks, the host grants.
                     guest.setFocus(Role.GUEST);
-                    check(until(2000, () -> host.poll().stream().anyMatch(e -> e instanceof LinkEvent.Focus f && f.requested())),
+                    check(until(2000, () -> host.poll().stream().anyMatch(e -> e instanceof LinkEvent.Focus && ((LinkEvent.Focus) e).requested())),
                             "host sees the focus request");
                     host.setFocus(Role.GUEST);
                     check(until(2000, () -> guest.poll().stream().anyMatch(e -> e instanceof LinkEvent.Focus)), "guest sees grant");
@@ -376,7 +379,7 @@ public final class LinkTests {
                         guest.poll();
                         return after.stream().anyMatch(e -> e instanceof LinkEvent.Lost);
                     }), "host notices the end");
-                    LinkEvent.Lost lost = (LinkEvent.Lost) after.stream().filter(e -> e instanceof LinkEvent.Lost).findFirst().orElseThrow();
+                    LinkEvent.Lost lost = (LinkEvent.Lost) after.stream().filter(e -> e instanceof LinkEvent.Lost).findFirst().get();
                     check(lost.reason().contains("peer said bye: test over"), "reason is the bye, got: " + lost.reason());
                     eq(host.focus(), Role.HOST, "focus returns to the host");
 
@@ -477,7 +480,7 @@ public final class LinkTests {
                 }), "watchdog fires");
                 long ms = (System.nanoTime() - t0) / 1_000_000;
                 check(ms >= 350 && ms < 1500, "fires after about the timeout, took " + ms + " ms");
-                LinkEvent.Lost lost = (LinkEvent.Lost) events.stream().filter(e -> e instanceof LinkEvent.Lost).findFirst().orElseThrow();
+                LinkEvent.Lost lost = (LinkEvent.Lost) events.stream().filter(e -> e instanceof LinkEvent.Lost).findFirst().get();
                 check(lost.reason().startsWith("watchdog"), "reason: " + lost.reason());
                 // The host said bye before closing.
                 s.setSoTimeout(1000);
@@ -504,7 +507,7 @@ public final class LinkTests {
                         return host.isConnected() && guest.isConnected();
                     }), "connect");
                     byte[] b = Wire.encode(new Header(1, 0, host.peer().session(), 1, Wire.nowUs()),
-                            new Datagram.PoseMsg(List.of(Wire.Pose.identity(1, Wire.nowUs()))));
+                            new Datagram.PoseMsg(Collections.singletonList(Wire.Pose.identity(1, Wire.nowUs()))));
                     stranger.send(new java.net.DatagramPacket(b, b.length, InetAddress.getLoopbackAddress(), host.udpPort()));
                     Thread.sleep(50);
                     List<LinkEvent> ev = host.poll();

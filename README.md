@@ -7,7 +7,12 @@ with a Java runtime (a Minecraft mod, a Hytale plugin, a Java server) can be a *
 implementation of it, tested against the Rust reference peers (`fake_host`, `fake_guest`).
 
 - No dependencies, no native code, nothing from any game. Package: `dev.patodois.rewritelink`.
-- Java 21 or newer (the code uses sealed interfaces, records and pattern matching for `switch`).
+- **Java 8 or newer**: compiled with `javac --release 8`, so it loads on Minecraft 1.7.10 and 1.12.2
+  (Java 8), 1.20.1 (Java 17) and 26.x (Java 21 and up). Nothing newer than Java 8 is used, not even
+  the library calls: records are small final classes with the same accessor names (`foo()`),
+  `equals`, `hashCode` and `toString`; `Control`, `LinkEvent` and `Wire.Datagram` are plain interfaces
+  (not `sealed`), so a `switch` over them needs a `default`; time stamps come from `Instant.now()`,
+  which has microsecond resolution on Java 9 and later and millisecond resolution on Java 8.
 - Everything binds and connects to `127.0.0.1` only.
 - Non-blocking: `Link.poll()` never blocks, `Link` methods are synchronized so a game thread may
   send while a helper thread polls (`LinkRunner` is that helper thread).
@@ -30,10 +35,20 @@ implementation of it, tested against the Rust reference peers (`fake_host`, `fak
 file read-only, validates it, and copies a slot with the seqlock (colour and the optional linear depth
 plane), and a `Writer` for the sending side. `frame_channel` and `Frame` are parsed by `Link` as usual.
 
+The seqlock has to work without `VarHandle` and without `sun.misc.Unsafe`, which Java 8 does not offer
+or this library does not want. The `lock` word is accessed through a `LongBuffer` view of the mapping
+(one aligned 64-bit access on every platform; `ByteBuffer.getLong` can be assembled byte by byte on a
+Java 8 that does not know the CPU), and the contract's release and acquire fences are a full fence made
+from a volatile read-modify-write (`AtomicInteger.incrementAndGet`), which Java 8 specifies as a total
+order and HotSpot compiles to a real barrier that the JIT also respects for the mapped memory. The
+long comment at the top of `PixelFile.java` has the details, and `PixelFileTests` runs a writer thread
+against a reader thread (two slots, so the writer keeps lapping the reader) to check that a torn copy is
+never accepted.
+
 ## Build and test
 
 ```sh
-export JAVA_HOME=/opt/homebrew/opt/openjdk@25     # any JDK 21+
+export JAVA_HOME=/opt/homebrew/opt/openjdk@25     # any JDK 9+ to build (javac --release 8); the jar runs on Java 8+
 ./gradlew build --no-daemon                       # build/libs/link-java-<version>.jar, and the tests
 ./gradlew linkTests --no-daemon                   # just the tests
 ./gradlew demo --no-daemon --args="guest --port 47800 --orbit"
@@ -42,7 +57,14 @@ export JAVA_HOME=/opt/homebrew/opt/openjdk@25     # any JDK 21+
 The tests are a plain runner (`LinkTests`, no JUnit): they encode and decode the contract's worked
 example byte for byte, check every layout offset and length, reject malformed input (plus a
 20,000-case fuzz), and run live sessions in one process (handshake, state flow, stale drops,
-`busy`, bad hello, watchdog, clean bye with half-close, foreign addresses).
+`busy`, bad hello, watchdog, clean bye with half-close, foreign addresses), then `PixelFileTests`
+(layout, depth plane, refusals, and the writer-against-reader contention test). They are compiled
+for Java 8 too and can run on a Java 8 runtime:
+
+```sh
+java -cp build/classes/java/main:build/classes/java/test dev.patodois.rewritelink.LinkTests
+# a longer contention soak: add -Dlinkjava.contentionMs=20000
+```
 
 Consumers either depend on the jar or compile `src/main/java` together with their own sources
 (`hytale-link` does the latter, `minecraft-link` includes this project as a Gradle composite build
@@ -51,7 +73,8 @@ and bundles it into its mod jar).
 ## History
 
 This code was written and tested inside `hytale-link` (package `dev.patodois.hytalelink.link`), and
-moved here unchanged apart from the package name and the runner thread's name.
+moved here unchanged apart from the package name and the runner thread's name. It was then
+ported to Java 8 without changing what it does (see "What is in it").
 
 ## License
 

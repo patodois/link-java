@@ -66,16 +66,58 @@ public final class Link implements AutoCloseable {
 
     // ---------------------------------------------------------------- connection states
 
-    private sealed interface Conn {}
+    private interface Conn {}
 
     /** No connection. A guest retries at {@code nextTry}; a host waits. */
-    private record Idle(long nextTry) implements Conn {}
+    private static final class Idle implements Conn {
+        private final long nextTry;
+
+        Idle(long nextTry) {
+            this.nextTry = nextTry;
+        }
+
+        public long nextTry() {
+            return nextTry;
+        }
+    }
 
     /** Guest: a non-blocking connect is in flight. */
-    private record Connecting(SocketChannel ch, long since) implements Conn {}
+    private static final class Connecting implements Conn {
+        private final SocketChannel ch;
+        private final long since;
+
+        Connecting(SocketChannel ch, long since) {
+            this.ch = ch;
+            this.since = since;
+        }
+
+        public SocketChannel ch() {
+            return ch;
+        }
+
+        public long since() {
+            return since;
+        }
+    }
 
     /** Connected, waiting for the peer's hello. */
-    private record Handshake(Ctl ctl, long since) implements Conn {}
+    private static final class Handshake implements Conn {
+        private final Ctl ctl;
+        private final long since;
+
+        Handshake(Ctl ctl, long since) {
+            this.ctl = ctl;
+            this.since = since;
+        }
+
+        public Ctl ctl() {
+            return ctl;
+        }
+
+        public long since() {
+            return since;
+        }
+    }
 
     private static final class Live implements Conn {
         final Ctl ctl;
@@ -153,7 +195,23 @@ public final class Link implements AutoCloseable {
         }
 
         /** Result of {@link #readLines}: complete lines, then the end reason (applies after them). */
-        record Read(List<String> lines, String end) {}
+        static final class Read {
+            private final List<String> lines;
+            private final String end;
+
+            public Read(List<String> lines, String end) {
+                this.lines = lines;
+                this.end = end;
+            }
+
+            public List<String> lines() {
+                return lines;
+            }
+
+            public String end() {
+                return end;
+            }
+        }
 
         Read readLines() {
             List<String> lines = new ArrayList<>();
@@ -326,7 +384,8 @@ public final class Link implements AutoCloseable {
     }
 
     public synchronized PeerInfo peer() {
-        return conn instanceof Live l ? l.peer : null;
+        Conn c = conn;
+        return c instanceof Live ? ((Live) c).peer : null;
     }
 
     public synchronized Role focus() {
@@ -383,7 +442,7 @@ public final class Link implements AutoCloseable {
             for (Ctl c : busy) retire(c, "busy", now);
             return;
         }
-        if (conn instanceof Idle idle && now >= idle.nextTry()) {
+        if (conn instanceof Idle && now >= ((Idle) conn).nextTry()) {
             try {
                 SocketChannel ch = SocketChannel.open();
                 ch.configureBlocking(false);
@@ -392,7 +451,8 @@ public final class Link implements AutoCloseable {
             } catch (IOException e) {
                 conn = new Idle(now + cfg.reconnectMs);
             }
-        } else if (conn instanceof Connecting c) {
+        } else if (conn instanceof Connecting) {
+            Connecting c = (Connecting) conn;
             try {
                 if (c.ch().finishConnect()) {
                     Ctl ctl = new Ctl(c.ch());
@@ -429,8 +489,8 @@ public final class Link implements AutoCloseable {
     }
 
     private Ctl ctl() {
-        if (conn instanceof Handshake h) return h.ctl();
-        if (conn instanceof Live l) return l.ctl;
+        if (conn instanceof Handshake) return ((Handshake) conn).ctl();
+        if (conn instanceof Live) return ((Live) conn).ctl;
         return null;
     }
 
@@ -465,30 +525,29 @@ public final class Link implements AutoCloseable {
         } catch (WireException e) {
             return new String[] {"protocol error: " + e.getMessage(), "bye"};
         }
-        if (conn instanceof Live l) l.lastHeard = now;
-        if (msg instanceof Control.Bye b) return new String[] {"peer said bye: " + b.reason()};
+        if (conn instanceof Live) ((Live) conn).lastHeard = now;
+        if (msg instanceof Control.Bye) return new String[] {"peer said bye: " + ((Control.Bye) msg).reason()};
         if (conn instanceof Handshake) {
-            if (!(msg instanceof Control.Hello h)) return new String[] {"expected hello", "bye"};
-            return onHello(h, now);
+            if (!(msg instanceof Control.Hello)) return new String[] {"expected hello", "bye"};
+            return onHello((Control.Hello) msg, now);
         }
-        switch (msg) {
-            case Control.Hello h -> {
-                return new String[] {"second hello", "bye"};
-            }
-            case Control.Spawn s -> events.add(new LinkEvent.Spawn(s));
-            case Control.Despawn d -> {
-                poseTimes.remove(d.entity());
-                events.add(new LinkEvent.Despawn(d.entity()));
-            }
-            case Control.Input in -> {
-                boolean requested = role == Role.HOST;
-                if (!requested) focus = in.focus();
-                events.add(new LinkEvent.Focus(in.focus(), requested));
-            }
-            case Control.FrameChannel f -> events.add(new LinkEvent.FrameChannel(f));
-            case Control.Bye b -> { }
-            case Control.Unknown u -> { }
+        if (msg instanceof Control.Hello) {
+            return new String[] {"second hello", "bye"};
+        } else if (msg instanceof Control.Spawn) {
+            events.add(new LinkEvent.Spawn((Control.Spawn) msg));
+        } else if (msg instanceof Control.Despawn) {
+            Control.Despawn d = (Control.Despawn) msg;
+            poseTimes.remove(d.entity());
+            events.add(new LinkEvent.Despawn(d.entity()));
+        } else if (msg instanceof Control.Input) {
+            Control.Input in = (Control.Input) msg;
+            boolean requested = role == Role.HOST;
+            if (!requested) focus = in.focus();
+            events.add(new LinkEvent.Focus(in.focus(), requested));
+        } else if (msg instanceof Control.FrameChannel) {
+            events.add(new LinkEvent.FrameChannel((Control.FrameChannel) msg));
         }
+        // Bye was handled above; an Unknown type is ignored.
         return null;
     }
 
@@ -571,10 +630,11 @@ public final class Link implements AutoCloseable {
                 continue; // e.g. ICMP port-unreachable from an earlier send
             }
             if (from == null) break;
-            if (!(conn instanceof Live live)) {
+            if (!(conn instanceof Live)) {
                 foreign++;
                 continue;
             }
+            Live live = (Live) conn;
             if (!from.equals(live.peer.udpAddr()) && !(from.getAddress().isLoopbackAddress()
                     && from.getPort() == live.peer.udpAddr().getPort())) {
                 foreign++;
@@ -600,41 +660,39 @@ public final class Link implements AutoCloseable {
     }
 
     private void onDatagram(Header header, Datagram body) {
-        switch (body) {
-            case Datagram.Heartbeat h -> { }
-            case Datagram.Unknown u -> { }
-            case Datagram.CameraMsg c -> {
-                if (lastCamera != null && !Wire.seqNewer(header.seq(), lastCamera)) {
+        if (body instanceof Datagram.CameraMsg) {
+            if (lastCamera != null && !Wire.seqNewer(header.seq(), lastCamera)) {
+                stale++;
+                return;
+            }
+            lastCamera = header.seq();
+            events.add(new LinkEvent.Camera(header, ((Datagram.CameraMsg) body).camera()));
+        } else if (body instanceof Datagram.PoseMsg) {
+            List<Wire.Pose> poses = ((Datagram.PoseMsg) body).poses();
+            List<Wire.Pose> fresh = new ArrayList<>(poses.size());
+            for (Wire.Pose pose : poses) {
+                long last = poseTimes.getOrDefault(pose.entity(), 0L);
+                // time_us is a u64 sampled from the wall clock; it never reaches the sign bit.
+                if (Long.compareUnsigned(pose.timeUs(), last) >= 0) {
+                    poseTimes.put(pose.entity(), pose.timeUs());
+                    fresh.add(pose);
+                } else {
                     stale++;
-                    return;
                 }
-                lastCamera = header.seq();
-                events.add(new LinkEvent.Camera(header, c.camera()));
             }
-            case Datagram.PoseMsg p -> {
-                List<Wire.Pose> fresh = new ArrayList<>(p.poses().size());
-                for (Wire.Pose pose : p.poses()) {
-                    long last = poseTimes.getOrDefault(pose.entity(), 0L);
-                    // time_us is a u64 sampled from the wall clock; it never reaches the sign bit.
-                    if (Long.compareUnsigned(pose.timeUs(), last) >= 0) {
-                        poseTimes.put(pose.entity(), pose.timeUs());
-                        fresh.add(pose);
-                    } else {
-                        stale++;
-                    }
-                }
-                if (!fresh.isEmpty()) events.add(new LinkEvent.Poses(header, fresh));
+            if (!fresh.isEmpty()) events.add(new LinkEvent.Poses(header, fresh));
+        } else if (body instanceof Datagram.CollisionMsg) {
+            onCollision(((Datagram.CollisionMsg) body).chunk());
+        } else if (body instanceof Datagram.FrameMsg) {
+            Wire.FrameReady f = ((Datagram.FrameMsg) body).frame();
+            if (Long.compareUnsigned(f.frame(), lastFrame) <= 0) {
+                stale++;
+                return;
             }
-            case Datagram.CollisionMsg c -> onCollision(c.chunk());
-            case Datagram.FrameMsg f -> {
-                if (Long.compareUnsigned(f.frame().frame(), lastFrame) <= 0) {
-                    stale++;
-                    return;
-                }
-                lastFrame = f.frame().frame();
-                events.add(new LinkEvent.Frame(header, f.frame()));
-            }
+            lastFrame = f.frame();
+            events.add(new LinkEvent.Frame(header, f));
         }
+        // A Heartbeat or an Unknown kind only counts as the peer being alive (done by the caller).
     }
 
     private void onCollision(Wire.CollisionChunk c) {
@@ -668,9 +726,10 @@ public final class Link implements AutoCloseable {
     }
 
     private void pollTimers(long now) {
-        if (conn instanceof Handshake h && now - h.since() > cfg.timeoutMs) {
+        if (conn instanceof Handshake && now - ((Handshake) conn).since() > cfg.timeoutMs) {
             end("no hello before the timeout", true);
-        } else if (conn instanceof Live l) {
+        } else if (conn instanceof Live) {
+            Live l = (Live) conn;
             long silent = now - l.lastHeard;
             if (silent > l.timeoutMs) {
                 end("watchdog: nothing heard for " + silent + " ms", true);
@@ -691,7 +750,8 @@ public final class Link implements AutoCloseable {
 
     /** Sends one datagram to the peer and returns its {@code seq}. */
     private int send(Datagram body) throws WireException {
-        if (!(conn instanceof Live live)) throw new WireException("not connected");
+        if (!(conn instanceof Live)) throw new WireException("not connected");
+        Live live = (Live) conn;
         Header h = new Header(live.peer.protocol(), 0, live.peer.session(), seq, Wire.nowUs());
         byte[] bytes = Wire.encode(h, body);
         seq++;
@@ -746,7 +806,8 @@ public final class Link implements AutoCloseable {
     }
 
     private void sendControl(Control c) throws WireException {
-        if (!(conn instanceof Live live)) throw new WireException("not connected");
+        if (!(conn instanceof Live)) throw new WireException("not connected");
+        Live live = (Live) conn;
         linesSent++;
         live.ctl.queue(c);
         String err = live.ctl.flush();
@@ -769,9 +830,9 @@ public final class Link implements AutoCloseable {
     public synchronized void close() {
         long now = now();
         Ctl ctl = ctl();
-        if (conn instanceof Connecting c) {
+        if (conn instanceof Connecting) {
             try {
-                c.ch().close();
+                ((Connecting) conn).ch().close();
             } catch (IOException ignored) {
                 // nothing to do
             }

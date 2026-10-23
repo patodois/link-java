@@ -3,13 +3,16 @@ plugins {
 	id 'maven-publish'
 }
 
-// Pure Java, no dependencies. Release 21 because the code uses pattern matching for switch
-// (final in Java 21) together with sealed interfaces and records. Any game whose runtime is
-// Java 21 or newer can embed this jar.
+// Pure Java, no dependencies. Release 8 so the jar loads on every runtime a game embeds it in:
+// Minecraft 1.7.10 and 1.12.2 (Java 8), 1.20.1 (Java 17), 26.x (Java 21 and up). `release` (javac
+// --release), not just source/target, compiles against the Java 8 class library, so a call to
+// anything newer (List.of, String.repeat, the absolute bulk ByteBuffer methods, VarHandle...) is a
+// compile error here instead of a NoSuchMethodError in someone's game. Needs JDK 9 or newer to
+// build; JDK 25 still supports --release 8, with an "obsolete" lint warning that is switched off.
 tasks.withType(JavaCompile).configureEach {
-	options.release = 21
+	options.release = 8
 	options.encoding = 'UTF-8'
-	options.compilerArgs << '-Xlint:all'
+	options.compilerArgs << '-Xlint:all' << '-Xlint:-options'
 }
 
 java {

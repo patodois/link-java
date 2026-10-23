@@ -71,7 +71,69 @@ public final class Wire {
     // ------------------------------------------------------------------ message types
 
     /** The 24-byte header. {@code session} and {@code seq} are u32 stored in an int. */
-    public record Header(int version, int flags, int session, int seq, long timeUs) {}
+    public static final class Header {
+        private final int version;
+        private final int flags;
+        private final int session;
+        private final int seq;
+        private final long timeUs;
+
+        public Header(int version, int flags, int session, int seq, long timeUs) {
+            this.version = version;
+            this.flags = flags;
+            this.session = session;
+            this.seq = seq;
+            this.timeUs = timeUs;
+        }
+
+        public int version() {
+            return version;
+        }
+
+        public int flags() {
+            return flags;
+        }
+
+        public int session() {
+            return session;
+        }
+
+        public int seq() {
+            return seq;
+        }
+
+        public long timeUs() {
+            return timeUs;
+        }
+
+        @Override
+        public boolean equals(Object o) {
+            if (this == o) return true;
+            if (!(o instanceof Header)) return false;
+            Header that = (Header) o;
+            return version == that.version
+                    && flags == that.flags
+                    && session == that.session
+                    && seq == that.seq
+                    && timeUs == that.timeUs;
+        }
+
+        @Override
+        public int hashCode() {
+            int h = 0;
+            h = 31 * h + Integer.hashCode(version);
+            h = 31 * h + Integer.hashCode(flags);
+            h = 31 * h + Integer.hashCode(session);
+            h = 31 * h + Integer.hashCode(seq);
+            h = 31 * h + Long.hashCode(timeUs);
+            return h;
+        }
+
+        @Override
+        public String toString() {
+            return "Header[version=" + version + ", flags=" + flags + ", session=" + session + ", seq=" + seq + ", timeUs=" + timeUs + "]";
+        }
+    }
 
     public enum DepthRange {
         NEG_ONE_TO_ONE(0), ZERO_TO_ONE(1), REVERSED(2);
@@ -91,9 +153,93 @@ public final class Wire {
     }
 
     /** The host's view. Matrices are column-major, {@code m[c*4 + r]}. */
-    public record Camera(
-            float[] view, float[] proj, float fovY, float near, float far,
-            int viewportWidth, int viewportHeight, DepthRange depthRange) {
+    public static final class Camera {
+        private final float[] view;
+        private final float[] proj;
+        private final float fovY;
+        private final float near;
+        private final float far;
+        private final int viewportWidth;
+        private final int viewportHeight;
+        private final DepthRange depthRange;
+
+        public Camera(float[] view, float[] proj, float fovY, float near, float far, int viewportWidth, int viewportHeight, DepthRange depthRange) {
+            this.view = view;
+            this.proj = proj;
+            this.fovY = fovY;
+            this.near = near;
+            this.far = far;
+            this.viewportWidth = viewportWidth;
+            this.viewportHeight = viewportHeight;
+            this.depthRange = depthRange;
+        }
+
+        public float[] view() {
+            return view;
+        }
+
+        public float[] proj() {
+            return proj;
+        }
+
+        public float fovY() {
+            return fovY;
+        }
+
+        public float near() {
+            return near;
+        }
+
+        public float far() {
+            return far;
+        }
+
+        public int viewportWidth() {
+            return viewportWidth;
+        }
+
+        public int viewportHeight() {
+            return viewportHeight;
+        }
+
+        public DepthRange depthRange() {
+            return depthRange;
+        }
+
+        @Override
+        public boolean equals(Object o) {
+            if (this == o) return true;
+            if (!(o instanceof Camera)) return false;
+            Camera that = (Camera) o;
+            return java.util.Objects.equals(view, that.view)
+                    && java.util.Objects.equals(proj, that.proj)
+                    && Float.compare(fovY, that.fovY) == 0
+                    && Float.compare(near, that.near) == 0
+                    && Float.compare(far, that.far) == 0
+                    && viewportWidth == that.viewportWidth
+                    && viewportHeight == that.viewportHeight
+                    && java.util.Objects.equals(depthRange, that.depthRange);
+        }
+
+        @Override
+        public int hashCode() {
+            int h = 0;
+            h = 31 * h + java.util.Objects.hashCode(view);
+            h = 31 * h + java.util.Objects.hashCode(proj);
+            h = 31 * h + Float.hashCode(fovY);
+            h = 31 * h + Float.hashCode(near);
+            h = 31 * h + Float.hashCode(far);
+            h = 31 * h + Integer.hashCode(viewportWidth);
+            h = 31 * h + Integer.hashCode(viewportHeight);
+            h = 31 * h + java.util.Objects.hashCode(depthRange);
+            return h;
+        }
+
+        @Override
+        public String toString() {
+            return "Camera[view=" + view + ", proj=" + proj + ", fovY=" + fovY + ", near=" + near + ", far=" + far + ", viewportWidth=" + viewportWidth + ", viewportHeight=" + viewportHeight + ", depthRange=" + depthRange + "]";
+        }
+
 
         /** A right-handed look-at camera with an OpenGL-style perspective projection. */
         public static Camera lookAt(float[] eye, float[] target, float fovY, float near, float far,
@@ -142,10 +288,93 @@ public final class Wire {
     }
 
     /** One entity pose, world space. {@code entity} is a u32 in a long. */
-    public record Pose(
-            long entity, int flags, long timeUs,
-            float[] translation, float[] rotation, float[] scale,
-            float[] velocity, float[] angularVelocity) {
+    public static final class Pose {
+        private final long entity;
+        private final int flags;
+        private final long timeUs;
+        private final float[] translation;
+        private final float[] rotation;
+        private final float[] scale;
+        private final float[] velocity;
+        private final float[] angularVelocity;
+
+        public Pose(long entity, int flags, long timeUs, float[] translation, float[] rotation, float[] scale, float[] velocity, float[] angularVelocity) {
+            this.entity = entity;
+            this.flags = flags;
+            this.timeUs = timeUs;
+            this.translation = translation;
+            this.rotation = rotation;
+            this.scale = scale;
+            this.velocity = velocity;
+            this.angularVelocity = angularVelocity;
+        }
+
+        public long entity() {
+            return entity;
+        }
+
+        public int flags() {
+            return flags;
+        }
+
+        public long timeUs() {
+            return timeUs;
+        }
+
+        public float[] translation() {
+            return translation;
+        }
+
+        public float[] rotation() {
+            return rotation;
+        }
+
+        public float[] scale() {
+            return scale;
+        }
+
+        public float[] velocity() {
+            return velocity;
+        }
+
+        public float[] angularVelocity() {
+            return angularVelocity;
+        }
+
+        @Override
+        public boolean equals(Object o) {
+            if (this == o) return true;
+            if (!(o instanceof Pose)) return false;
+            Pose that = (Pose) o;
+            return entity == that.entity
+                    && flags == that.flags
+                    && timeUs == that.timeUs
+                    && java.util.Objects.equals(translation, that.translation)
+                    && java.util.Objects.equals(rotation, that.rotation)
+                    && java.util.Objects.equals(scale, that.scale)
+                    && java.util.Objects.equals(velocity, that.velocity)
+                    && java.util.Objects.equals(angularVelocity, that.angularVelocity);
+        }
+
+        @Override
+        public int hashCode() {
+            int h = 0;
+            h = 31 * h + Long.hashCode(entity);
+            h = 31 * h + Integer.hashCode(flags);
+            h = 31 * h + Long.hashCode(timeUs);
+            h = 31 * h + java.util.Objects.hashCode(translation);
+            h = 31 * h + java.util.Objects.hashCode(rotation);
+            h = 31 * h + java.util.Objects.hashCode(scale);
+            h = 31 * h + java.util.Objects.hashCode(velocity);
+            h = 31 * h + java.util.Objects.hashCode(angularVelocity);
+            return h;
+        }
+
+        @Override
+        public String toString() {
+            return "Pose[entity=" + entity + ", flags=" + flags + ", timeUs=" + timeUs + ", translation=" + translation + ", rotation=" + rotation + ", scale=" + scale + ", velocity=" + velocity + ", angularVelocity=" + angularVelocity + "]";
+        }
+
 
         /** An identity pose at the origin, at rest. */
         public static Pose identity(long entity, long timeUs) {
@@ -155,19 +384,327 @@ public final class Wire {
     }
 
     /** One datagram's share of a collision snapshot; each triangle is nine floats a, b, c. */
-    public record CollisionChunk(
-            int query, int chunkIndex, int chunkCount, float[] center, float radius,
-            List<float[]> triangles) {}
+    public static final class CollisionChunk {
+        private final int query;
+        private final int chunkIndex;
+        private final int chunkCount;
+        private final float[] center;
+        private final float radius;
+        private final List<float[]> triangles;
 
-    public record FrameReady(long frame, int slot, int cameraSeq, int width, int height) {}
+        public CollisionChunk(int query, int chunkIndex, int chunkCount, float[] center, float radius, List<float[]> triangles) {
+            this.query = query;
+            this.chunkIndex = chunkIndex;
+            this.chunkCount = chunkCount;
+            this.center = center;
+            this.radius = radius;
+            this.triangles = triangles;
+        }
 
-    public sealed interface Datagram {
-        record Heartbeat() implements Datagram {}
-        record CameraMsg(Camera camera) implements Datagram {}
-        record PoseMsg(List<Pose> poses) implements Datagram {}
-        record CollisionMsg(CollisionChunk chunk) implements Datagram {}
-        record FrameMsg(FrameReady frame) implements Datagram {}
-        record Unknown(int kind, int payloadLen) implements Datagram {}
+        public int query() {
+            return query;
+        }
+
+        public int chunkIndex() {
+            return chunkIndex;
+        }
+
+        public int chunkCount() {
+            return chunkCount;
+        }
+
+        public float[] center() {
+            return center;
+        }
+
+        public float radius() {
+            return radius;
+        }
+
+        public List<float[]> triangles() {
+            return triangles;
+        }
+
+        @Override
+        public boolean equals(Object o) {
+            if (this == o) return true;
+            if (!(o instanceof CollisionChunk)) return false;
+            CollisionChunk that = (CollisionChunk) o;
+            return query == that.query
+                    && chunkIndex == that.chunkIndex
+                    && chunkCount == that.chunkCount
+                    && java.util.Objects.equals(center, that.center)
+                    && Float.compare(radius, that.radius) == 0
+                    && java.util.Objects.equals(triangles, that.triangles);
+        }
+
+        @Override
+        public int hashCode() {
+            int h = 0;
+            h = 31 * h + Integer.hashCode(query);
+            h = 31 * h + Integer.hashCode(chunkIndex);
+            h = 31 * h + Integer.hashCode(chunkCount);
+            h = 31 * h + java.util.Objects.hashCode(center);
+            h = 31 * h + Float.hashCode(radius);
+            h = 31 * h + java.util.Objects.hashCode(triangles);
+            return h;
+        }
+
+        @Override
+        public String toString() {
+            return "CollisionChunk[query=" + query + ", chunkIndex=" + chunkIndex + ", chunkCount=" + chunkCount + ", center=" + center + ", radius=" + radius + ", triangles=" + triangles + "]";
+        }
+    }
+
+    public static final class FrameReady {
+        private final long frame;
+        private final int slot;
+        private final int cameraSeq;
+        private final int width;
+        private final int height;
+
+        public FrameReady(long frame, int slot, int cameraSeq, int width, int height) {
+            this.frame = frame;
+            this.slot = slot;
+            this.cameraSeq = cameraSeq;
+            this.width = width;
+            this.height = height;
+        }
+
+        public long frame() {
+            return frame;
+        }
+
+        public int slot() {
+            return slot;
+        }
+
+        public int cameraSeq() {
+            return cameraSeq;
+        }
+
+        public int width() {
+            return width;
+        }
+
+        public int height() {
+            return height;
+        }
+
+        @Override
+        public boolean equals(Object o) {
+            if (this == o) return true;
+            if (!(o instanceof FrameReady)) return false;
+            FrameReady that = (FrameReady) o;
+            return frame == that.frame
+                    && slot == that.slot
+                    && cameraSeq == that.cameraSeq
+                    && width == that.width
+                    && height == that.height;
+        }
+
+        @Override
+        public int hashCode() {
+            int h = 0;
+            h = 31 * h + Long.hashCode(frame);
+            h = 31 * h + Integer.hashCode(slot);
+            h = 31 * h + Integer.hashCode(cameraSeq);
+            h = 31 * h + Integer.hashCode(width);
+            h = 31 * h + Integer.hashCode(height);
+            return h;
+        }
+
+        @Override
+        public String toString() {
+            return "FrameReady[frame=" + frame + ", slot=" + slot + ", cameraSeq=" + cameraSeq + ", width=" + width + ", height=" + height + "]";
+        }
+    }
+
+    public interface Datagram {
+        final class Heartbeat implements Datagram {
+            public Heartbeat() {
+            }
+
+            @Override
+            public boolean equals(Object o) {
+                if (this == o) return true;
+                if (!(o instanceof Heartbeat)) return false;
+                return true;
+            }
+
+            @Override
+            public int hashCode() {
+                return 0;
+            }
+
+            @Override
+            public String toString() {
+                return "Heartbeat[]";
+            }
+        }
+        final class CameraMsg implements Datagram {
+            private final Camera camera;
+
+            public CameraMsg(Camera camera) {
+                this.camera = camera;
+            }
+
+            public Camera camera() {
+                return camera;
+            }
+
+            @Override
+            public boolean equals(Object o) {
+                if (this == o) return true;
+                if (!(o instanceof CameraMsg)) return false;
+                CameraMsg that = (CameraMsg) o;
+                return java.util.Objects.equals(camera, that.camera);
+            }
+
+            @Override
+            public int hashCode() {
+                int h = 0;
+                h = 31 * h + java.util.Objects.hashCode(camera);
+                return h;
+            }
+
+            @Override
+            public String toString() {
+                return "CameraMsg[camera=" + camera + "]";
+            }
+        }
+        final class PoseMsg implements Datagram {
+            private final List<Pose> poses;
+
+            public PoseMsg(List<Pose> poses) {
+                this.poses = poses;
+            }
+
+            public List<Pose> poses() {
+                return poses;
+            }
+
+            @Override
+            public boolean equals(Object o) {
+                if (this == o) return true;
+                if (!(o instanceof PoseMsg)) return false;
+                PoseMsg that = (PoseMsg) o;
+                return java.util.Objects.equals(poses, that.poses);
+            }
+
+            @Override
+            public int hashCode() {
+                int h = 0;
+                h = 31 * h + java.util.Objects.hashCode(poses);
+                return h;
+            }
+
+            @Override
+            public String toString() {
+                return "PoseMsg[poses=" + poses + "]";
+            }
+        }
+        final class CollisionMsg implements Datagram {
+            private final CollisionChunk chunk;
+
+            public CollisionMsg(CollisionChunk chunk) {
+                this.chunk = chunk;
+            }
+
+            public CollisionChunk chunk() {
+                return chunk;
+            }
+
+            @Override
+            public boolean equals(Object o) {
+                if (this == o) return true;
+                if (!(o instanceof CollisionMsg)) return false;
+                CollisionMsg that = (CollisionMsg) o;
+                return java.util.Objects.equals(chunk, that.chunk);
+            }
+
+            @Override
+            public int hashCode() {
+                int h = 0;
+                h = 31 * h + java.util.Objects.hashCode(chunk);
+                return h;
+            }
+
+            @Override
+            public String toString() {
+                return "CollisionMsg[chunk=" + chunk + "]";
+            }
+        }
+        final class FrameMsg implements Datagram {
+            private final FrameReady frame;
+
+            public FrameMsg(FrameReady frame) {
+                this.frame = frame;
+            }
+
+            public FrameReady frame() {
+                return frame;
+            }
+
+            @Override
+            public boolean equals(Object o) {
+                if (this == o) return true;
+                if (!(o instanceof FrameMsg)) return false;
+                FrameMsg that = (FrameMsg) o;
+                return java.util.Objects.equals(frame, that.frame);
+            }
+
+            @Override
+            public int hashCode() {
+                int h = 0;
+                h = 31 * h + java.util.Objects.hashCode(frame);
+                return h;
+            }
+
+            @Override
+            public String toString() {
+                return "FrameMsg[frame=" + frame + "]";
+            }
+        }
+        final class Unknown implements Datagram {
+            private final int kind;
+            private final int payloadLen;
+
+            public Unknown(int kind, int payloadLen) {
+                this.kind = kind;
+                this.payloadLen = payloadLen;
+            }
+
+            public int kind() {
+                return kind;
+            }
+
+            public int payloadLen() {
+                return payloadLen;
+            }
+
+            @Override
+            public boolean equals(Object o) {
+                if (this == o) return true;
+                if (!(o instanceof Unknown)) return false;
+                Unknown that = (Unknown) o;
+                return kind == that.kind
+                        && payloadLen == that.payloadLen;
+            }
+
+            @Override
+            public int hashCode() {
+                int h = 0;
+                h = 31 * h + Integer.hashCode(kind);
+                h = 31 * h + Integer.hashCode(payloadLen);
+                return h;
+            }
+
+            @Override
+            public String toString() {
+                return "Unknown[kind=" + kind + ", payloadLen=" + payloadLen + "]";
+            }
+        }
 
     }
 
@@ -183,34 +720,35 @@ public final class Wire {
     }
 
     public static int kindOf(Datagram d) {
-        return switch (d) {
-            case Datagram.Heartbeat h -> KIND_HEARTBEAT;
-            case Datagram.CameraMsg c -> KIND_CAMERA;
-            case Datagram.PoseMsg p -> KIND_POSE;
-            case Datagram.CollisionMsg c -> KIND_COLLISION;
-            case Datagram.FrameMsg f -> KIND_FRAME;
-            case Datagram.Unknown u -> u.kind();
-        };
+        if (d instanceof Datagram.Heartbeat) return KIND_HEARTBEAT;
+        if (d instanceof Datagram.CameraMsg) return KIND_CAMERA;
+        if (d instanceof Datagram.PoseMsg) return KIND_POSE;
+        if (d instanceof Datagram.CollisionMsg) return KIND_COLLISION;
+        if (d instanceof Datagram.FrameMsg) return KIND_FRAME;
+        if (d instanceof Datagram.Unknown) return ((Datagram.Unknown) d).kind();
+        throw new IllegalArgumentException("not a datagram of this library: " + d);
     }
 
     /** Encodes {@code header} and {@code body} into a fresh array of exactly the datagram's size. */
     public static byte[] encode(Header h, Datagram body) throws WireException {
-        int payload = switch (body) {
-            case Datagram.Heartbeat x -> 0;
-            case Datagram.CameraMsg x -> CAMERA_LEN;
-            case Datagram.PoseMsg x -> {
-                int n = x.poses().size();
-                if (n < 1 || n > MAX_POSES) throw new WireException("pose count " + n);
-                yield POSE_HEADER_LEN + POSE_LEN * n;
-            }
-            case Datagram.CollisionMsg x -> {
-                int n = x.chunk().triangles().size();
-                if (n > MAX_TRIANGLES) throw new WireException("triangle count " + n);
-                yield COLLISION_HEADER_LEN + TRIANGLE_LEN * n;
-            }
-            case Datagram.FrameMsg x -> FRAME_LEN;
-            case Datagram.Unknown x -> throw new WireException("cannot encode an unknown kind");
-        };
+        int payload;
+        if (body instanceof Datagram.Heartbeat) {
+            payload = 0;
+        } else if (body instanceof Datagram.CameraMsg) {
+            payload = CAMERA_LEN;
+        } else if (body instanceof Datagram.PoseMsg) {
+            int n = ((Datagram.PoseMsg) body).poses().size();
+            if (n < 1 || n > MAX_POSES) throw new WireException("pose count " + n);
+            payload = POSE_HEADER_LEN + POSE_LEN * n;
+        } else if (body instanceof Datagram.CollisionMsg) {
+            int n = ((Datagram.CollisionMsg) body).chunk().triangles().size();
+            if (n > MAX_TRIANGLES) throw new WireException("triangle count " + n);
+            payload = COLLISION_HEADER_LEN + TRIANGLE_LEN * n;
+        } else if (body instanceof Datagram.FrameMsg) {
+            payload = FRAME_LEN;
+        } else {
+            throw new WireException("cannot encode an unknown kind");
+        }
         ByteBuffer b = buffer(HEADER_LEN + payload);
         b.putInt(MAGIC);
         b.putShort((short) h.version());
@@ -219,39 +757,33 @@ public final class Wire {
         b.putInt(h.session());
         b.putInt(h.seq());
         b.putLong(h.timeUs());
-        switch (body) {
-            case Datagram.Heartbeat x -> { }
-            case Datagram.CameraMsg x -> {
-                Camera c = x.camera();
-                putFloats(b, c.view(), 16);
-                putFloats(b, c.proj(), 16);
-                b.putFloat(c.fovY()).putFloat(c.near()).putFloat(c.far());
-                b.putInt(c.viewportWidth()).putInt(c.viewportHeight()).putInt(c.depthRange().code);
+        if (body instanceof Datagram.CameraMsg) {
+            Camera c = ((Datagram.CameraMsg) body).camera();
+            putFloats(b, c.view(), 16);
+            putFloats(b, c.proj(), 16);
+            b.putFloat(c.fovY()).putFloat(c.near()).putFloat(c.far());
+            b.putInt(c.viewportWidth()).putInt(c.viewportHeight()).putInt(c.depthRange().code);
+        } else if (body instanceof Datagram.PoseMsg) {
+            List<Pose> poses = ((Datagram.PoseMsg) body).poses();
+            b.putInt(poses.size()).putInt(0);
+            for (Pose p : poses) {
+                b.putInt((int) p.entity()).putInt(p.flags()).putLong(p.timeUs());
+                putFloats(b, p.translation(), 3);
+                putFloats(b, p.rotation(), 4);
+                putFloats(b, p.scale(), 3);
+                putFloats(b, p.velocity(), 3);
+                putFloats(b, p.angularVelocity(), 3);
             }
-            case Datagram.PoseMsg x -> {
-                b.putInt(x.poses().size()).putInt(0);
-                for (Pose p : x.poses()) {
-                    b.putInt((int) p.entity()).putInt(p.flags()).putLong(p.timeUs());
-                    putFloats(b, p.translation(), 3);
-                    putFloats(b, p.rotation(), 4);
-                    putFloats(b, p.scale(), 3);
-                    putFloats(b, p.velocity(), 3);
-                    putFloats(b, p.angularVelocity(), 3);
-                }
-            }
-            case Datagram.CollisionMsg x -> {
-                CollisionChunk c = x.chunk();
-                b.putInt(c.query()).putShort((short) c.chunkIndex()).putShort((short) c.chunkCount());
-                putFloats(b, c.center(), 3);
-                b.putFloat(c.radius()).putInt(c.triangles().size()).putInt(0);
-                for (float[] t : c.triangles()) putFloats(b, t, 9);
-            }
-            case Datagram.FrameMsg x -> {
-                FrameReady f = x.frame();
-                b.putLong(f.frame()).putInt(f.slot()).putInt(f.cameraSeq())
-                        .putInt(f.width()).putInt(f.height());
-            }
-            case Datagram.Unknown x -> { }
+        } else if (body instanceof Datagram.CollisionMsg) {
+            CollisionChunk c = ((Datagram.CollisionMsg) body).chunk();
+            b.putInt(c.query()).putShort((short) c.chunkIndex()).putShort((short) c.chunkCount());
+            putFloats(b, c.center(), 3);
+            b.putFloat(c.radius()).putInt(c.triangles().size()).putInt(0);
+            for (float[] t : c.triangles()) putFloats(b, t, 9);
+        } else if (body instanceof Datagram.FrameMsg) {
+            FrameReady f = ((Datagram.FrameMsg) body).frame();
+            b.putLong(f.frame()).putInt(f.slot()).putInt(f.cameraSeq())
+                    .putInt(f.width()).putInt(f.height());
         }
         return b.array();
     }
@@ -274,7 +806,45 @@ public final class Wire {
     }
 
     /** The result of {@link #decode}. */
-    public record Decoded(Header header, Datagram body) {}
+    public static final class Decoded {
+        private final Header header;
+        private final Datagram body;
+
+        public Decoded(Header header, Datagram body) {
+            this.header = header;
+            this.body = body;
+        }
+
+        public Header header() {
+            return header;
+        }
+
+        public Datagram body() {
+            return body;
+        }
+
+        @Override
+        public boolean equals(Object o) {
+            if (this == o) return true;
+            if (!(o instanceof Decoded)) return false;
+            Decoded that = (Decoded) o;
+            return java.util.Objects.equals(header, that.header)
+                    && java.util.Objects.equals(body, that.body);
+        }
+
+        @Override
+        public int hashCode() {
+            int h = 0;
+            h = 31 * h + java.util.Objects.hashCode(header);
+            h = 31 * h + java.util.Objects.hashCode(body);
+            return h;
+        }
+
+        @Override
+        public String toString() {
+            return "Decoded[header=" + header + ", body=" + body + "]";
+        }
+    }
 
     private static float[] floats(ByteBuffer b, int n) {
         float[] v = new float[n];
@@ -291,11 +861,12 @@ public final class Wire {
         ByteBuffer b = ByteBuffer.wrap(buf, HEADER_LEN, payload).order(ByteOrder.LITTLE_ENDIAN);
         Datagram body;
         switch (kind) {
-            case KIND_HEARTBEAT -> {
+            case KIND_HEARTBEAT: {
                 exact(kind, payload, 0);
                 body = new Datagram.Heartbeat();
+                break;
             }
-            case KIND_CAMERA -> {
+            case KIND_CAMERA: {
                 exact(kind, payload, CAMERA_LEN);
                 float[] view = floats(b, 16);
                 float[] proj = floats(b, 16);
@@ -303,8 +874,9 @@ public final class Wire {
                 int w = b.getInt(), ht = b.getInt();
                 DepthRange d = DepthRange.of(b.getInt());
                 body = new Datagram.CameraMsg(new Camera(view, proj, fov, near, far, w, ht, d));
+                break;
             }
-            case KIND_POSE -> {
+            case KIND_POSE: {
                 if (payload < 4) throw new WireException("truncated pose");
                 long count = Integer.toUnsignedLong(b.getInt());
                 if (count == 0 || count > MAX_POSES) throw new WireException("bad value: pose count");
@@ -319,8 +891,9 @@ public final class Wire {
                             floats(b, 3), floats(b, 3)));
                 }
                 body = new Datagram.PoseMsg(poses);
+                break;
             }
-            case KIND_COLLISION -> {
+            case KIND_COLLISION: {
                 if (payload < COLLISION_HEADER_LEN) throw new WireException("truncated collision");
                 int query = b.getInt();
                 int index = Short.toUnsignedInt(b.getShort());
@@ -335,14 +908,17 @@ public final class Wire {
                 List<float[]> tris = new ArrayList<>((int) n);
                 for (int i = 0; i < n; i++) tris.add(floats(b, 9));
                 body = new Datagram.CollisionMsg(new CollisionChunk(query, index, count, center, radius, tris));
+                break;
             }
-            case KIND_FRAME -> {
+            case KIND_FRAME: {
                 exact(kind, payload, FRAME_LEN);
                 FrameReady f = new FrameReady(b.getLong(), b.getInt(), b.getInt(), b.getInt(), b.getInt());
                 if (f.frame() == 0) throw new WireException("bad value: frame 0");
                 body = new Datagram.FrameMsg(f);
+                break;
             }
-            default -> body = new Datagram.Unknown(kind, payload);
+            default:
+                body = new Datagram.Unknown(kind, payload);
         }
         return new Decoded(h, body);
     }

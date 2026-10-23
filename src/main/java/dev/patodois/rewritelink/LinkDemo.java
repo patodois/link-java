@@ -1,5 +1,6 @@
 package dev.patodois.rewritelink;
 
+import java.util.Collections;
 import java.util.List;
 
 import dev.patodois.rewritelink.Control.Role;
@@ -63,28 +64,30 @@ public final class LinkDemo {
             double t = (System.nanoTime() - start) / 1e9;
             if (seconds > 0 && t > seconds) break;
             for (LinkEvent e : link.poll()) {
-                switch (e) {
-                    case LinkEvent.Connected c -> {
-                        log("host", String.format("connected: guest \"%s\", protocol v%d, session 0x%08x, guest udp %d",
-                                c.peer().game(), c.peer().protocol(), c.peer().session(), c.peer().udpAddr().getPort()));
-                        nextCollision = t;
-                    }
-                    case LinkEvent.Lost l -> log("host", "LOST the guest: " + l.reason());
-                    case LinkEvent.HandshakeFailed h -> log("host", "handshake failed: " + h.reason());
-                    case LinkEvent.Spawn s -> log("host", "guest spawned entity " + s.spawn().entity() + " = "
-                            + s.spawn().provider() + " asset \"" + s.spawn().asset() + "\"");
-                    case LinkEvent.Despawn d -> log("host", "guest despawned entity " + d.entity());
-                    case LinkEvent.Poses p -> {
-                        poseMsgs++;
-                        poses += p.poses().size();
-                        lastPose = p.poses().get(p.poses().size() - 1).translation();
-                    }
-                    case LinkEvent.Focus f when f.requested() -> {
-                        log("host", "guest asks for input focus; granting it to the " + f.focus().wire);
-                        link.setFocus(f.focus());
-                        giveBackAt = t + 2;
-                    }
-                    default -> { }
+                if (e instanceof LinkEvent.Connected) {
+                    LinkEvent.Connected c = (LinkEvent.Connected) e;
+                    log("host", String.format("connected: guest \"%s\", protocol v%d, session 0x%08x, guest udp %d",
+                            c.peer().game(), c.peer().protocol(), c.peer().session(), c.peer().udpAddr().getPort()));
+                    nextCollision = t;
+                } else if (e instanceof LinkEvent.Lost) {
+                    log("host", "LOST the guest: " + ((LinkEvent.Lost) e).reason());
+                } else if (e instanceof LinkEvent.HandshakeFailed) {
+                    log("host", "handshake failed: " + ((LinkEvent.HandshakeFailed) e).reason());
+                } else if (e instanceof LinkEvent.Spawn) {
+                    Control.Spawn sp = ((LinkEvent.Spawn) e).spawn();
+                    log("host", "guest spawned entity " + sp.entity() + " = " + sp.provider() + " asset \"" + sp.asset() + "\"");
+                } else if (e instanceof LinkEvent.Despawn) {
+                    log("host", "guest despawned entity " + ((LinkEvent.Despawn) e).entity());
+                } else if (e instanceof LinkEvent.Poses) {
+                    LinkEvent.Poses p = (LinkEvent.Poses) e;
+                    poseMsgs++;
+                    poses += p.poses().size();
+                    lastPose = p.poses().get(p.poses().size() - 1).translation();
+                } else if (e instanceof LinkEvent.Focus && ((LinkEvent.Focus) e).requested()) {
+                    LinkEvent.Focus f = (LinkEvent.Focus) e;
+                    log("host", "guest asks for input focus; granting it to the " + f.focus().wire);
+                    link.setFocus(f.focus());
+                    giveBackAt = t + 2;
                 }
             }
             if (link.isConnected()) {
@@ -136,44 +139,47 @@ public final class LinkDemo {
             double t = (System.nanoTime() - start) / 1e9;
             if (seconds > 0 && t > seconds) break;
             for (LinkEvent e : link.poll()) {
-                switch (e) {
-                    case LinkEvent.Connected c -> {
-                        log("guest", String.format("connected: host \"%s\", protocol v%d, session 0x%08x",
-                                c.peer().game(), c.peer().protocol(), c.peer().session()));
-                        link.spawn(new Control.Spawn(cube, "Java Guest", "demo/cube", "Cube"));
-                        askFocusAt = t + 2;
-                        lastPos = null;
+                if (e instanceof LinkEvent.Connected) {
+                    LinkEvent.Connected c = (LinkEvent.Connected) e;
+                    log("guest", String.format("connected: host \"%s\", protocol v%d, session 0x%08x",
+                            c.peer().game(), c.peer().protocol(), c.peer().session()));
+                    link.spawn(new Control.Spawn(cube, "Java Guest", "demo/cube", "Cube"));
+                    askFocusAt = t + 2;
+                    lastPos = null;
+                } else if (e instanceof LinkEvent.Lost) {
+                    log("guest", "LOST the host: " + ((LinkEvent.Lost) e).reason());
+                } else if (e instanceof LinkEvent.HandshakeFailed) {
+                    log("guest", "handshake failed: " + ((LinkEvent.HandshakeFailed) e).reason());
+                } else if (e instanceof LinkEvent.Camera) {
+                    LinkEvent.Camera c = (LinkEvent.Camera) e;
+                    cameras++;
+                    float[] eye = c.camera().eye(), fwd = c.camera().forward();
+                    float[] pos = {eye[0] + 3 * fwd[0], eye[1] + 3 * fwd[1], eye[2] + 3 * fwd[2]};
+                    long now = Wire.nowUs();
+                    Wire.Pose pose = Wire.Pose.identity(cube, now);
+                    if (orbit) {
+                        double a = 0.6 * t;
+                        pos = new float[] {eye[0] + (float) (8 * Math.cos(a)), eye[1], eye[2] + (float) (8 * Math.sin(a))};
+                        // The front (+Z) points along the direction of travel.
+                        float[] heading = {(float) -Math.sin(a), 0, (float) Math.cos(a)};
+                        System.arraycopy(Quat.fromTo(new float[] {0, 0, 1}, heading), 0, pose.rotation(), 0, 4);
                     }
-                    case LinkEvent.Lost l -> log("guest", "LOST the host: " + l.reason());
-                    case LinkEvent.HandshakeFailed h -> log("guest", "handshake failed: " + h.reason());
-                    case LinkEvent.Camera c -> {
-                        cameras++;
-                        float[] eye = c.camera().eye(), fwd = c.camera().forward();
-                        float[] pos = {eye[0] + 3 * fwd[0], eye[1] + 3 * fwd[1], eye[2] + 3 * fwd[2]};
-                        long now = Wire.nowUs();
-                        Wire.Pose pose = Wire.Pose.identity(cube, now);
-                        if (orbit) {
-                            double a = 0.6 * t;
-                            pos = new float[] {eye[0] + (float) (8 * Math.cos(a)), eye[1], eye[2] + (float) (8 * Math.sin(a))};
-                            // The front (+Z) points along the direction of travel.
-                            float[] heading = {(float) -Math.sin(a), 0, (float) Math.cos(a)};
-                            System.arraycopy(Quat.fromTo(new float[] {0, 0, 1}, heading), 0, pose.rotation(), 0, 4);
-                        }
-                        System.arraycopy(pos, 0, pose.translation(), 0, 3);
-                        if (lastPos != null) {
-                            float dt = (now - lastT) * 1e-6f;
-                            if (dt > 0) for (int i = 0; i < 3; i++) pose.velocity()[i] = (pos[i] - lastPos[i]) / dt;
-                        }
-                        lastPos = pos;
-                        lastT = now;
-                        link.sendPoses(List.of(pose));
-                        posesSent++;
+                    System.arraycopy(pos, 0, pose.translation(), 0, 3);
+                    if (lastPos != null) {
+                        float dt = (now - lastT) * 1e-6f;
+                        if (dt > 0) for (int i = 0; i < 3; i++) pose.velocity()[i] = (pos[i] - lastPos[i]) / dt;
                     }
-                    case LinkEvent.Collision c -> log("guest", "collision query " + Integer.toUnsignedLong(c.query())
+                    lastPos = pos;
+                    lastT = now;
+                    link.sendPoses(Collections.singletonList(pose));
+                    posesSent++;
+                } else if (e instanceof LinkEvent.Collision) {
+                    LinkEvent.Collision c = (LinkEvent.Collision) e;
+                    log("guest", "collision query " + Integer.toUnsignedLong(c.query())
                             + ": " + c.triangles().size() + " triangles within " + c.radius() + " m of "
                             + java.util.Arrays.toString(c.center()));
-                    case LinkEvent.Focus f -> log("guest", "host says input focus is now with the " + f.focus().wire);
-                    default -> { }
+                } else if (e instanceof LinkEvent.Focus) {
+                    log("guest", "host says input focus is now with the " + ((LinkEvent.Focus) e).focus().wire);
                 }
             }
             if (askFocusAt != null && t >= askFocusAt) {

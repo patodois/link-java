@@ -164,7 +164,7 @@ final class PixelFileTests {
     // ------------------------------------------------------------------ contention
 
     private static final int CW = 96, CH = 64, CSLOTS = 2; // two slots: the writer laps the reader's slot all the time
-    private static final long MS_PER_PHASE = 1500;
+    private static final long MS_PER_PHASE = Long.getLong("linkjava.contentionMs", 1500L); // -Dlinkjava.contentionMs=20000 for a long soak
 
     /** Frame {@code f} is {@code f} in every 8 bytes of colour and in every depth float. */
     private static void fill(long f, byte[] px, float[] depth) {

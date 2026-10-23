@@ -35,15 +35,24 @@ final class Json {
         for (int i = 0; i < s.length(); i++) {
             char c = s.charAt(i);
             switch (c) {
-                case '"' -> b.append("\\\"");
-                case '\\' -> b.append("\\\\");
-                case '\n' -> b.append("\\n");
-                case '\r' -> b.append("\\r");
-                case '\t' -> b.append("\\t");
-                default -> {
+                case '"':
+                    b.append("\\\"");
+                    break;
+                case '\\':
+                    b.append("\\\\");
+                    break;
+                case '\n':
+                    b.append("\\n");
+                    break;
+                case '\r':
+                    b.append("\\r");
+                    break;
+                case '\t':
+                    b.append("\\t");
+                    break;
+                default:
                     if (c < 0x20) b.append(String.format("\\u%04x", (int) c));
                     else b.append(c);
-                }
             }
         }
         return b.append('"').toString();
@@ -132,15 +141,31 @@ final class Json {
                 if (i >= s.length()) throw new JsonException("unterminated escape");
                 char e = s.charAt(i++);
                 switch (e) {
-                    case '"' -> b.append('"');
-                    case '\\' -> b.append('\\');
-                    case '/' -> b.append('/');
-                    case 'b' -> b.append('\b');
-                    case 'f' -> b.append('\f');
-                    case 'n' -> b.append('\n');
-                    case 'r' -> b.append('\r');
-                    case 't' -> b.append('\t');
-                    case 'u' -> {
+                    case '"':
+                        b.append('"');
+                        break;
+                    case '\\':
+                        b.append('\\');
+                        break;
+                    case '/':
+                        b.append('/');
+                        break;
+                    case 'b':
+                        b.append('\b');
+                        break;
+                    case 'f':
+                        b.append('\f');
+                        break;
+                    case 'n':
+                        b.append('\n');
+                        break;
+                    case 'r':
+                        b.append('\r');
+                        break;
+                    case 't':
+                        b.append('\t');
+                        break;
+                    case 'u':
                         if (i + 4 > s.length()) throw new JsonException("bad \\u escape");
                         try {
                             b.append((char) Integer.parseInt(s.substring(i, i + 4), 16));
@@ -148,8 +173,9 @@ final class Json {
                             throw new JsonException("bad \\u escape");
                         }
                         i += 4;
-                    }
-                    default -> throw new JsonException("bad escape");
+                        break;
+                    default:
+                        throw new JsonException("bad escape");
                 }
             }
         }
