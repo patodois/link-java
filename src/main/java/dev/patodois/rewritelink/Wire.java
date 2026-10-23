@@ -34,6 +34,18 @@ public final class Wire {
     public static final int MAX_PENDING_CONTROL = 1 << 20;
     public static final int LINGER_MS = 200;
 
+    /** Largest width or height of a pixel file (CONTRACT.md 9.6). */
+    public static final int MAX_FRAME_DIM = 16384;
+    /** Live entities a receiver keeps for its peer; a spawn beyond that is ignored (CONTRACT.md 8). */
+    public static final int MAX_ENTITIES = 1024;
+    /** The range of {@code heartbeat_ms} a hello may announce (CONTRACT.md 8). */
+    public static final int MIN_HEARTBEAT_MS = 10;
+    public static final int MAX_HEARTBEAT_MS = 10_000;
+    /** Collision datagrams one {@link Link#poll()} sends at most (CONTRACT.md 9.5). */
+    public static final int COLLISION_PER_POLL = 32;
+    /** The UDP receive buffer a receiver asks for, in bytes (CONTRACT.md 2); the OS may grant less. */
+    public static final int RECV_BUFFER_BYTES = 4 << 20;
+
     public static final int POSE_TELEPORT = 1;
 
     public static final int KIND_HEARTBEAT = 1;
@@ -215,8 +227,8 @@ public final class Wire {
             if (this == o) return true;
             if (!(o instanceof Camera)) return false;
             Camera that = (Camera) o;
-            return java.util.Objects.equals(view, that.view)
-                    && java.util.Objects.equals(proj, that.proj)
+            return java.util.Arrays.equals(view, that.view)
+                    && java.util.Arrays.equals(proj, that.proj)
                     && Float.compare(fovY, that.fovY) == 0
                     && Float.compare(near, that.near) == 0
                     && Float.compare(far, that.far) == 0
@@ -228,8 +240,8 @@ public final class Wire {
         @Override
         public int hashCode() {
             int h = 0;
-            h = 31 * h + java.util.Objects.hashCode(view);
-            h = 31 * h + java.util.Objects.hashCode(proj);
+            h = 31 * h + java.util.Arrays.hashCode(view);
+            h = 31 * h + java.util.Arrays.hashCode(proj);
             h = 31 * h + Float.hashCode(fovY);
             h = 31 * h + Float.hashCode(near);
             h = 31 * h + Float.hashCode(far);
@@ -241,7 +253,7 @@ public final class Wire {
 
         @Override
         public String toString() {
-            return "Camera[view=" + view + ", proj=" + proj + ", fovY=" + fovY + ", near=" + near + ", far=" + far + ", viewportWidth=" + viewportWidth + ", viewportHeight=" + viewportHeight + ", depthRange=" + depthRange + "]";
+            return "Camera[view=" + java.util.Arrays.toString(view) + ", proj=" + java.util.Arrays.toString(proj) + ", fovY=" + fovY + ", near=" + near + ", far=" + far + ", viewportWidth=" + viewportWidth + ", viewportHeight=" + viewportHeight + ", depthRange=" + depthRange + "]";
         }
 
 
@@ -353,11 +365,11 @@ public final class Wire {
             return entity == that.entity
                     && flags == that.flags
                     && timeUs == that.timeUs
-                    && java.util.Objects.equals(translation, that.translation)
-                    && java.util.Objects.equals(rotation, that.rotation)
-                    && java.util.Objects.equals(scale, that.scale)
-                    && java.util.Objects.equals(velocity, that.velocity)
-                    && java.util.Objects.equals(angularVelocity, that.angularVelocity);
+                    && java.util.Arrays.equals(translation, that.translation)
+                    && java.util.Arrays.equals(rotation, that.rotation)
+                    && java.util.Arrays.equals(scale, that.scale)
+                    && java.util.Arrays.equals(velocity, that.velocity)
+                    && java.util.Arrays.equals(angularVelocity, that.angularVelocity);
         }
 
         @Override
@@ -366,17 +378,17 @@ public final class Wire {
             h = 31 * h + Long.hashCode(entity);
             h = 31 * h + Integer.hashCode(flags);
             h = 31 * h + Long.hashCode(timeUs);
-            h = 31 * h + java.util.Objects.hashCode(translation);
-            h = 31 * h + java.util.Objects.hashCode(rotation);
-            h = 31 * h + java.util.Objects.hashCode(scale);
-            h = 31 * h + java.util.Objects.hashCode(velocity);
-            h = 31 * h + java.util.Objects.hashCode(angularVelocity);
+            h = 31 * h + java.util.Arrays.hashCode(translation);
+            h = 31 * h + java.util.Arrays.hashCode(rotation);
+            h = 31 * h + java.util.Arrays.hashCode(scale);
+            h = 31 * h + java.util.Arrays.hashCode(velocity);
+            h = 31 * h + java.util.Arrays.hashCode(angularVelocity);
             return h;
         }
 
         @Override
         public String toString() {
-            return "Pose[entity=" + entity + ", flags=" + flags + ", timeUs=" + timeUs + ", translation=" + translation + ", rotation=" + rotation + ", scale=" + scale + ", velocity=" + velocity + ", angularVelocity=" + angularVelocity + "]";
+            return "Pose[entity=" + entity + ", flags=" + flags + ", timeUs=" + timeUs + ", translation=" + java.util.Arrays.toString(translation) + ", rotation=" + java.util.Arrays.toString(rotation) + ", scale=" + java.util.Arrays.toString(scale) + ", velocity=" + java.util.Arrays.toString(velocity) + ", angularVelocity=" + java.util.Arrays.toString(angularVelocity) + "]";
         }
 
 
@@ -437,9 +449,9 @@ public final class Wire {
             return query == that.query
                     && chunkIndex == that.chunkIndex
                     && chunkCount == that.chunkCount
-                    && java.util.Objects.equals(center, that.center)
+                    && java.util.Arrays.equals(center, that.center)
                     && Float.compare(radius, that.radius) == 0
-                    && java.util.Objects.equals(triangles, that.triangles);
+                    && sameTriangles(triangles, that.triangles);
         }
 
         @Override
@@ -448,16 +460,33 @@ public final class Wire {
             h = 31 * h + Integer.hashCode(query);
             h = 31 * h + Integer.hashCode(chunkIndex);
             h = 31 * h + Integer.hashCode(chunkCount);
-            h = 31 * h + java.util.Objects.hashCode(center);
+            h = 31 * h + java.util.Arrays.hashCode(center);
             h = 31 * h + Float.hashCode(radius);
-            h = 31 * h + java.util.Objects.hashCode(triangles);
+            h = 31 * h + hashTriangles(triangles);
             return h;
         }
 
         @Override
         public String toString() {
-            return "CollisionChunk[query=" + query + ", chunkIndex=" + chunkIndex + ", chunkCount=" + chunkCount + ", center=" + center + ", radius=" + radius + ", triangles=" + triangles + "]";
+            return "CollisionChunk[query=" + query + ", chunkIndex=" + chunkIndex + ", chunkCount=" + chunkCount + ", center=" + java.util.Arrays.toString(center) + ", radius=" + radius + ", triangles=" + triangles.size() + " triangles]";
         }
+    }
+
+    /** Whether two triangle lists hold equal triangles (arrays compared by content). */
+    static boolean sameTriangles(List<float[]> a, List<float[]> b) {
+        if (a == b) return true;
+        if (a == null || b == null || a.size() != b.size()) return false;
+        for (int i = 0; i < a.size(); i++) {
+            if (!java.util.Arrays.equals(a.get(i), b.get(i))) return false;
+        }
+        return true;
+    }
+
+    static int hashTriangles(List<float[]> a) {
+        if (a == null) return 0;
+        int h = 1;
+        for (float[] t : a) h = 31 * h + java.util.Arrays.hashCode(t);
+        return h;
     }
 
     public static final class FrameReady {
@@ -739,16 +768,23 @@ public final class Wire {
         if (body instanceof Datagram.Heartbeat) {
             payload = 0;
         } else if (body instanceof Datagram.CameraMsg) {
+            if (((Datagram.CameraMsg) body).camera().depthRange() == null) throw new WireException("bad value: depth_range");
             payload = CAMERA_LEN;
         } else if (body instanceof Datagram.PoseMsg) {
             int n = ((Datagram.PoseMsg) body).poses().size();
             if (n < 1 || n > MAX_POSES) throw new WireException("pose count " + n);
             payload = POSE_HEADER_LEN + POSE_LEN * n;
         } else if (body instanceof Datagram.CollisionMsg) {
-            int n = ((Datagram.CollisionMsg) body).chunk().triangles().size();
+            CollisionChunk c = ((Datagram.CollisionMsg) body).chunk();
+            int n = c.triangles().size();
             if (n > MAX_TRIANGLES) throw new WireException("triangle count " + n);
+            if (c.chunkCount() < 1 || c.chunkCount() > 0xFFFF || c.chunkIndex() < 0 || c.chunkIndex() >= c.chunkCount()) {
+                throw new WireException("bad value: chunk_index " + c.chunkIndex() + " of " + c.chunkCount()
+                        + " (chunk_index must be below chunk_count, both fit 16 bits)");
+            }
             payload = COLLISION_HEADER_LEN + TRIANGLE_LEN * n;
         } else if (body instanceof Datagram.FrameMsg) {
+            if (((Datagram.FrameMsg) body).frame().frame() == 0) throw new WireException("bad value: frame numbers start at 1");
             payload = FRAME_LEN;
         } else {
             throw new WireException("cannot encode an unknown kind");

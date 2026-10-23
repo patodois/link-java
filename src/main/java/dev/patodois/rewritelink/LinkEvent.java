@@ -229,7 +229,10 @@ public interface LinkEvent {
         }
     }
 
-    /** Poses newer than the last one of their entity. */
+    /**
+     * Poses of entities the peer spawned (others are dropped and counted in {@link Link#unknownEntity}),
+     * newer than the last one of their entity.
+     */
     final class Poses implements LinkEvent {
         private final Header header;
         private final List<Wire.Pose> poses;
@@ -306,24 +309,24 @@ public interface LinkEvent {
             if (!(o instanceof Collision)) return false;
             Collision that = (Collision) o;
             return query == that.query
-                    && java.util.Objects.equals(center, that.center)
+                    && java.util.Arrays.equals(center, that.center)
                     && Float.compare(radius, that.radius) == 0
-                    && java.util.Objects.equals(triangles, that.triangles);
+                    && Wire.sameTriangles(triangles, that.triangles);
         }
 
         @Override
         public int hashCode() {
             int h = 0;
             h = 31 * h + Integer.hashCode(query);
-            h = 31 * h + java.util.Objects.hashCode(center);
+            h = 31 * h + java.util.Arrays.hashCode(center);
             h = 31 * h + Float.hashCode(radius);
-            h = 31 * h + java.util.Objects.hashCode(triangles);
+            h = 31 * h + Wire.hashTriangles(triangles);
             return h;
         }
 
         @Override
         public String toString() {
-            return "Collision[query=" + query + ", center=" + center + ", radius=" + radius + ", triangles=" + triangles + "]";
+            return "Collision[query=" + query + ", center=" + java.util.Arrays.toString(center) + ", radius=" + radius + ", triangles=" + triangles.size() + " triangles]";
         }
     }
 

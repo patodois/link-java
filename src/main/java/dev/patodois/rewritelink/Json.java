@@ -9,9 +9,19 @@ import java.util.Map;
  * A tiny JSON reader and string writer, enough for the control lines. Objects become
  * {@code Map<String,Object>}, arrays {@code List<Object>}, integers {@code Long} (or
  * {@code java.math.BigInteger} when they do not fit), other numbers {@code Double}.
+ *
+ * <p>The reader accepts exactly what the Rust side's {@code serde_json} accepts, because a control
+ * line that one implementation takes and the other refuses is a way to make them disagree: numbers
+ * follow the JSON grammar (no leading zeros, no {@code 1.}, no {@code +1}), {@code -0} is the
+ * float negative zero (so it is no integer), a number beyond the range of a double is an error,
+ * a unicode escape takes exactly four hex digits and surrogate escapes must come as a valid pair, and
+ * arrays and objects may nest {@link #MAX_NESTING} deep.
  */
 final class Json {
     private Json() {}
+
+    /** serde_json's recursion limit: 128 nested arrays or objects fail, 127 do not. */
+    static final int MAX_NESTING = 127;
 
     static final class JsonException extends Exception {
         private static final long serialVersionUID = 1L;
@@ -75,9 +85,9 @@ final class Json {
         }
 
         Object value(int depth) throws JsonException {
-            if (depth > 32) throw new JsonException("nested too deeply");
             if (i >= s.length()) throw new JsonException("unexpected end");
             char c = s.charAt(i);
+            if ((c == '{' || c == '[') && depth >= MAX_NESTING) throw new JsonException("nested too deeply");
             switch (c) {
                 case '{': return object(depth);
                 case '[': return array(depth);
@@ -96,34 +106,48 @@ final class Json {
             i += lit.length();
         }
 
+        boolean digit() {
+            return i < s.length() && s.charAt(i) >= '0' && s.charAt(i) <= '9';
+        }
+
+        /** number = [-] (0 | 1-9 digits) [. digits] [(e|E) [+|-] digits], as in RFC 8259. */
         Object number() throws JsonException {
             int start = i;
             boolean integer = true;
             if (s.charAt(i) == '-') i++;
-            while (i < s.length()) {
-                char c = s.charAt(i);
-                if (c >= '0' && c <= '9') {
-                    i++;
-                } else if (c == '.' || c == 'e' || c == 'E' || c == '+' || c == '-') {
-                    integer = false;
-                    i++;
-                } else {
-                    break;
-                }
+            if (!digit()) throw new JsonException("bad number");
+            if (s.charAt(i) == '0') {
+                i++; // a leading zero ends the integer part: "01" leaves the 1 behind, which no caller accepts
+            } else {
+                while (digit()) i++;
+            }
+            if (i < s.length() && s.charAt(i) == '.') {
+                integer = false;
+                i++;
+                if (!digit()) throw new JsonException("bad number");
+                while (digit()) i++;
+            }
+            if (i < s.length() && (s.charAt(i) == 'e' || s.charAt(i) == 'E')) {
+                integer = false;
+                i++;
+                if (i < s.length() && (s.charAt(i) == '+' || s.charAt(i) == '-')) i++;
+                if (!digit()) throw new JsonException("bad number");
+                while (digit()) i++;
             }
             String t = s.substring(start, i);
-            try {
-                if (integer) {
-                    try {
-                        return Long.parseLong(t);
-                    } catch (NumberFormatException e) {
-                        return new java.math.BigInteger(t);
-                    }
+            if (integer) {
+                if (t.equals("-0")) return Double.valueOf(-0.0); // serde_json: a float, so not an integer field
+                try {
+                    return Long.parseLong(t);
+                } catch (NumberFormatException e) {
+                    java.math.BigInteger big = new java.math.BigInteger(t);
+                    if (Double.isInfinite(big.doubleValue())) throw new JsonException("number out of range");
+                    return big;
                 }
-                return Double.parseDouble(t);
-            } catch (NumberFormatException e) {
-                throw new JsonException("bad number");
             }
+            double d = Double.parseDouble(t);
+            if (Double.isInfinite(d)) throw new JsonException("number out of range");
+            return d;
         }
 
         String string() throws JsonException {
@@ -165,19 +189,42 @@ final class Json {
                     case 't':
                         b.append('\t');
                         break;
-                    case 'u':
-                        if (i + 4 > s.length()) throw new JsonException("bad \\u escape");
-                        try {
-                            b.append((char) Integer.parseInt(s.substring(i, i + 4), 16));
-                        } catch (NumberFormatException ex) {
-                            throw new JsonException("bad \\u escape");
+                    case 'u': {
+                        char u = hex4();
+                        if (Character.isHighSurrogate(u)) {
+                            // It must be followed by an escaped low surrogate.
+                            if (i + 1 >= s.length() || s.charAt(i) != '\\' || s.charAt(i + 1) != 'u') {
+                                throw new JsonException("lone leading surrogate in hex escape");
+                            }
+                            i += 2;
+                            char low = hex4();
+                            if (!Character.isLowSurrogate(low)) throw new JsonException("lone leading surrogate in hex escape");
+                            b.append(u).append(low);
+                        } else if (Character.isLowSurrogate(u)) {
+                            throw new JsonException("lone trailing surrogate in hex escape");
+                        } else {
+                            b.append(u);
                         }
-                        i += 4;
                         break;
+                    }
                     default:
                         throw new JsonException("bad escape");
                 }
             }
+        }
+
+        /** Exactly four hex digits, ASCII only ({@code Character.digit} would take other scripts' digits). */
+        char hex4() throws JsonException {
+            if (i + 4 > s.length()) throw new JsonException("bad \\u escape");
+            int v = 0;
+            for (int k = 0; k < 4; k++) {
+                char c = s.charAt(i + k);
+                int d = c >= '0' && c <= '9' ? c - '0' : c >= 'a' && c <= 'f' ? c - 'a' + 10 : c >= 'A' && c <= 'F' ? c - 'A' + 10 : -1;
+                if (d < 0) throw new JsonException("bad \\u escape");
+                v = v * 16 + d;
+            }
+            i += 4;
+            return (char) v;
         }
 
         List<Object> array(int depth) throws JsonException {

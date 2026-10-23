@@ -517,6 +517,7 @@ public final class LinkTests {
             }
         });
 
+        ReviewTests.run(args);
         PixelFileTests.run();
 
         System.out.println();
