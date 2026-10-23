@@ -94,18 +94,17 @@ final class ReviewTests {
         });
 
         // ----- M4 (Java half): the dimension limit is 16384, not 32768
-        test("review M4: width or height above 16384 is refused, 16384 is not", () -> {
-            for (int[] wh : new int[][] {{16385, 1}, {1, 16385}, {32768, 1}, {1, 32768}}) {
-                int stride = wh[0] * 4;
-                long slot = (64L + (long) stride * wh[1] + 63) & ~63L;
-                Path p = headerOnly("dim.frames", 1, wh[0], wh[1], stride, slot, 64 + slot);
-                check(refused(p), wh[0] + "x" + wh[1] + " must be refused");
-            }
-            int stride = 16384 * 4;
-            Path ok = headerOnly("dim-ok.frames", 1, 16384, 1, stride, (64L + stride + 63) & ~63L, 64 + ((64L + stride + 63) & ~63L));
-            check(!refused(ok), "16384 x 1 is fine");
-            try (PixelFile.Reader r = PixelFile.Reader.open(ok)) {
-                eq(r.width, 16384, "width");
+        test("review M4: width or height above 16384, or more than 2^26 pixels, is refused; 16384 x 1 and 8192 x 8192 are not", () -> {
+            int[][] cases = {
+                {16384, 1, 1}, {1, 16384, 1}, {8192, 8192, 1}, {16384, 4096, 1},
+                {16384, 8192, 0}, {8193, 8192, 0}, {16385, 1, 0}, {1, 16385, 0}, {32768, 1, 0}, {1, 32768, 0},
+            };
+            for (int[] c : cases) {
+                int stride = c[0] * 4;
+                long slot = (64L + (long) stride * c[1] + 63) & ~63L;
+                Path p = headerOnly("dim.frames", 1, c[0], c[1], stride, slot, 64 + slot); // sparse
+                check(refused(p) == (c[2] == 0), c[0] + "x" + c[1] + (c[2] == 0 ? " must be refused" : " must open"));
+                Files.delete(p);
             }
         });
 
@@ -117,6 +116,17 @@ final class ReviewTests {
                 threw = true;
             }
             check(threw, "a writer of 16385 x 1 must be refused");
+            for (int[] wh : new int[][] {{16384, 8192}, {8193, 8192}}) {
+                threw = false;
+                Path p = temp("big2.frames");
+                try {
+                    new PixelFile.Writer(p, wh[0], wh[1], 1, false).close();
+                } catch (IllegalArgumentException e) {
+                    threw = true;
+                }
+                check(threw, "a writer of " + wh[0] + " x " + wh[1] + " must be refused");
+                check(!Files.exists(p), "and creates no file");
+            }
         });
 
         test("pixel file: stride must be exactly width * 4", () -> {

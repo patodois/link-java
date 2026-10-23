@@ -36,6 +36,8 @@ public final class Wire {
 
     /** Largest width or height of a pixel file (CONTRACT.md 9.6). */
     public static final int MAX_FRAME_DIM = 16384;
+    /** Largest width * height of a pixel file (2^26, 8192 x 8192): a read copies at most 256 MiB of colour and 256 MiB of depth. */
+    public static final long MAX_FRAME_PIXELS = 1L << 26;
     /** Live entities a receiver keeps for its peer; a spawn beyond that is ignored (CONTRACT.md 8). */
     public static final int MAX_ENTITIES = 1024;
     /** The range of {@code heartbeat_ms} a hello may announce (CONTRACT.md 8). */

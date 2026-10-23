@@ -212,7 +212,8 @@ public final class PixelFile {
         /**
          * Opens and checks the file as section 9.6 says: the path must be absolute and name a regular
          * file (a symlink, FIFO, device or directory is refused), {@code width} and {@code height}
-         * are 1 to 16384, {@code stride} is {@code width * 4}, and all size arithmetic is checked
+         * are 1 to 16384 with {@code width * height} at most 67108864, {@code stride} is {@code width * 4},
+         * and all size arithmetic is checked
          * for overflow. A {@code depth_format} the reader does not know is not an error: the file
          * is read as colour only.
          *
@@ -243,6 +244,7 @@ public final class PixelFile {
                 if (version != 1) throw new FormatException("pixel file version " + version);
                 if (slots < 1 || slots > 16) throw new FormatException("slots " + slots);
                 if (w < 1 || h < 1 || w > MAX_DIM || h > MAX_DIM) throw new FormatException("size " + w + "x" + h);
+                if ((long) w * h > Wire.MAX_FRAME_PIXELS) throw new FormatException("size " + w + "x" + h + " is over " + Wire.MAX_FRAME_PIXELS + " pixels");
                 if (format != FORMAT_RGBA8) throw new FormatException("pixel format " + format);
                 if (stride != w * 4) throw new FormatException("stride " + stride + " is not width * 4");
                 int depthFormat = m.getInt(40);
@@ -361,6 +363,9 @@ public final class PixelFile {
         public Writer(Path path, int width, int height, int slots, boolean withDepth) throws IOException {
             if (slots < 1 || slots > 16 || width < 1 || height < 1) throw new IllegalArgumentException("bad pixel file size");
             if (width > MAX_DIM || height > MAX_DIM) throw new IllegalArgumentException("width and height are at most " + MAX_DIM);
+            if ((long) width * height > Wire.MAX_FRAME_PIXELS) {
+                throw new IllegalArgumentException("width * height is at most " + Wire.MAX_FRAME_PIXELS + " pixels");
+            }
             this.path = path;
             this.width = width;
             this.height = height;
