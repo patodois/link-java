@@ -141,12 +141,14 @@ final class PixelFileTests {
 
         test("pixel file: a truncated file is refused", () -> {
             Path p = temp("e.frames");
+            Path cut = temp("e-cut.frames");
             try (PixelFile.Writer w = new PixelFile.Writer(p, 4, 4, 3, false)) {
-                try (FileChannel ch = FileChannel.open(p, StandardOpenOption.WRITE)) {
-                    ch.truncate(64 + w.slotSize); // header and one slot of three
-                }
+                // A shortened copy: Windows refuses to resize a file a process has mapped, and the
+                // contract never resizes one either, so the writer's own file is left alone
+                byte[] whole = Files.readAllBytes(p);
+                Files.write(cut, java.util.Arrays.copyOf(whole, (int) (64 + w.slotSize))); // header and one slot of three
                 boolean refused = false;
-                try (PixelFile.Reader r = PixelFile.Reader.open(p)) {
+                try (PixelFile.Reader r = PixelFile.Reader.open(cut)) {
                     check(r != null, "unreachable");
                 } catch (PixelFile.FormatException e) {
                     refused = true;
