@@ -1,0 +1,10 @@
+# JitPack (https://jitpack.io) builds a git tag on demand, with no account: the first request for
+# com.github.patodois:link-java:<tag> (or the "Get it" button on jitpack.io/#patodois/link-java) builds it.
+#
+# Gradle 9 needs JDK 17 or newer to run, and JitPack's default JDK is older, so ask for 21.
+jdk:
+  - openjdk21
+# The default build also runs `check`, i.e. the loopback session tests; the tag was already tested by CI, so only
+# publish. JitPack sets GROUP (com.github.patodois), ARTIFACT (link-java) and VERSION (the tag).
+install:
+  - ./gradlew publishToMavenLocal --no-daemon -Pgroup="${GROUP:?}" -Pversion="${VERSION:?}"

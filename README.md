@@ -80,6 +80,95 @@ What the code review of both implementations changed, in the order of the contra
   `chunk_index` that is not below `chunk_count`, and frame 0.
 - Datagrams are accepted from exactly `127.0.0.1:<the peer's udp_port>`.
 
+## Use it in your project
+
+No account and no release upload is needed: [JitPack](https://jitpack.io) builds a git tag of this repository on the first
+request and serves it as a Maven artifact (`jitpack.yml` asks it for JDK 21, which Gradle 9 needs). The coordinates are
+
+```
+com.github.patodois:link-java:<tag>        e.g. com.github.patodois:link-java:v0.1.0
+```
+
+where `<tag>` is a tag of this repository (see the [releases and tags](https://github.com/patodois/link-java/tags)); `main-SNAPSHOT`
+gives the latest commit of `main`. The jar has no dependencies and runs on Java 8 or newer.
+
+Gradle (Groovy; in `settings.gradle` or in the `repositories` block of `build.gradle`):
+
+```groovy
+repositories {
+    mavenCentral()
+    maven { url 'https://jitpack.io' }
+}
+dependencies {
+    implementation 'com.github.patodois:link-java:v0.1.0'
+}
+```
+
+Gradle (Kotlin):
+
+```kotlin
+repositories {
+    mavenCentral()
+    maven("https://jitpack.io")
+}
+dependencies {
+    implementation("com.github.patodois:link-java:v0.1.0")
+}
+```
+
+Maven:
+
+```xml
+<repositories>
+  <repository>
+    <id>jitpack.io</id>
+    <url>https://jitpack.io</url>
+  </repository>
+</repositories>
+
+<dependency>
+  <groupId>com.github.patodois</groupId>
+  <artifactId>link-java</artifactId>
+  <version>v0.1.0</version>
+</dependency>
+```
+
+A Minecraft mod has to carry the library inside its own jar (jar-in-jar or `jarJar`, as
+[minecraft-link](https://github.com/patodois/minecraft-link) does), because the loader does not resolve Maven dependencies.
+
+### A host and a guest in about ten lines each
+
+Both sides poll once per frame or tick; `poll()` never blocks. The host is the game you play (it sends the camera), the guest
+publishes an entity that the host draws. Everything runs on `127.0.0.1`, port 47800 by default.
+
+```java
+import dev.patodois.rewritelink.*;
+import java.util.Collections;
+
+// Host: listen, send the camera every frame, read the guest's poses
+try (Link link = Link.host(new LinkConfig("My Game"))) {
+    while (running) {
+        for (LinkEvent e : link.poll()) {
+            if (e instanceof LinkEvent.Poses) draw(((LinkEvent.Poses) e).poses());
+        }
+        if (link.isConnected()) link.sendCamera(Wire.Camera.lookAt(eye, target, 1.0f, 0.1f, 1000f, 1280, 720));
+    }
+}
+
+// Guest: connect, spawn one entity, and answer every camera with its pose
+try (Link link = Link.guest(new LinkConfig("My Rewrite"))) {
+    while (running) {
+        for (LinkEvent e : link.poll()) {
+            if (e instanceof LinkEvent.Connected) link.spawn(new Control.Spawn(1, "My Rewrite", "demo/cube", "Cube"));
+            if (e instanceof LinkEvent.Camera) link.sendPoses(Collections.singletonList(Wire.Pose.identity(1, Wire.nowUs())));
+        }
+    }
+}
+```
+
+`running`, `draw`, `eye` and `target` are yours. `LinkRunner` polls on a helper thread when you would rather not poll yourself, and
+`LinkDemo` (`./gradlew demo`) is a longer, runnable version of both sides.
+
 ## Build and test
 
 ```sh

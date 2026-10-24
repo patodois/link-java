@@ -60,10 +60,33 @@ tasks.register('demo', JavaExec) {
 	maxHeapSize = '128m'
 }
 
+// The Maven publication that JitPack (jitpack.yml) builds from a git tag. JitPack publishes it as
+// com.github.patodois:link-java:<tag>; the group below (dev.patodois) is what local builds use, for example the
+// composite build of minecraft-link.
 publishing {
 	publications {
 		create('mavenJava', MavenPublication) {
 			from components.java
+			artifactId = 'link-java'
+			pom {
+				name = 'link-java'
+				description = 'Pure-Java implementation of the rewrite-bridge passthrough link protocol v1 (Java 8 or newer, no dependencies)'
+				url = 'https://github.com/patodois/link-java'
+				licenses {
+					license {
+						name = 'MIT License'
+						url = 'https://opensource.org/license/mit'
+					}
+					license {
+						name = 'Apache License, Version 2.0'
+						url = 'https://www.apache.org/licenses/LICENSE-2.0'
+					}
+				}
+				scm {
+					url = 'https://github.com/patodois/link-java'
+					connection = 'scm:git:https://github.com/patodois/link-java.git'
+				}
+			}
 		}
 	}
 }
