@@ -195,6 +195,39 @@ java -cp build/classes/java/main:build/classes/java/test dev.patodois.rewritelin
 # a longer contention soak: add -Dlinkjava.contentionMs=20000
 ```
 
+### Shared test vectors
+
+`tests/vectors/link` holds the protocol's shared test vectors: control lines, UDP datagrams, pixel files and
+scripted sessions over real sockets, each with the result the contract demands. They are derived from
+`CONTRACT.md` alone, and the Rust, Java, C and C# implementations of the link all run the same files.
+`VectorTests` (called at the end of `LinkTests`, so part of `linkTests` and `linkTestsPreferIpv6`) runs them
+against this library and lists every failing vector together, with its id, section and basis. A vector that this
+library is known to disagree with is named in `KNOWN_DISAGREEMENTS` with the reason; it is reported but does not
+fail the run, and the run fails when such a vector starts to pass, so the list cannot go stale.
+
+The directory is a copy of the one in rewrite-bridge, pinned by digest: `VectorTests` checks every file against
+`tests/vectors/link/SHA256SUMS`, and the SHA-256 of `SHA256SUMS` against the constant `VECTORS_DIGEST`, so the
+vectors only change together with a deliberate edit of that constant. To take new vectors, run
+`scripts/sync-link-vectors.sh <this repository>` from the rewrite-bridge checkout (it replaces
+`tests/vectors/link`, keeps the `.gitattributes` entry that stops line-ending conversion, and prints the digest),
+paste the printed digest into `VECTORS_DIGEST`, and run the tests. `RBL_VECTORS_DIR` points the runner at another
+directory and `RBL_VECTORS_SKIP_LARGE=1` skips the cases that need a sparse file of up to 1 GiB.
+
+### Interop peer
+
+`InteropPeer` (in the test sources) is this library's side of the cross-language interop test of rewrite-bridge
+(`tests/interop`): a scripted host or guest session against another implementation of the link, over real sockets
+and a real pixel file. `./gradlew testClasses` compiles it; then, in two terminals (or let `tests/interop/run.sh`
+of rewrite-bridge start them):
+
+```sh
+java -cp build/classes/java/main:build/classes/java/test dev.patodois.rewritelink.InteropPeer host --port 47810 --label java
+java -cp build/classes/java/main:build/classes/java/test dev.patodois.rewritelink.InteropPeer guest --port 47810 --label java
+```
+
+It prints log lines and, as its last line, `RBL-INTEROP-RESULT {json}`; the exit status is 0 when every check
+passed, 1 when one failed and 2 for a bad command line. This library has no counters, so `stats` is `null`.
+
 Consumers either depend on the jar or compile `src/main/java` together with their own sources
 (`hytale-link` does the latter, `minecraft-link` includes this project as a Gradle composite build
 and bundles it into its mod jar).

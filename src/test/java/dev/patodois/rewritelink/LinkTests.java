@@ -519,6 +519,7 @@ public final class LinkTests {
 
         ReviewTests.run(args);
         PixelFileTests.run();
+        VectorTests.run();
 
         System.out.println();
         System.out.println(passed + " passed, " + failed + " failed");
