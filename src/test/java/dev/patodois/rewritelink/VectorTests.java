@@ -71,25 +71,6 @@ final class VectorTests {
         KNOWN_DISAGREEMENTS.put(id, reason);
     }
 
-    static {
-        // The same three vectors the Rust implementation fails, for the same reason: a line that ends the session
-        // because of its bytes (not UTF-8, longer than 65536) is a protocol error, and Ctl.readLines reports it
-        // through Read.end(), which Link.pollControl turns into end(reason, false): the session ends (Lost event,
-        // connection closed after the half-close and drain) but no bye line is written. A line that parses but is
-        // not a valid message does get its bye (onLine returns {reason, "bye"}), so only these byte-level errors differ.
-        known("sess.host.control.invalid_utf8_ends_session",
-                "Link.pollControl ends the session without a bye when a line is not UTF-8 (Ctl.readLines -> end(reason, false)); "
-                + "section 8 makes a line that is not a JSON object with a string \"type\" a protocol error where \"the receiver "
-                + "sends bye with the reason and closes\", and 6.1 says every close for a protocol error starts with writing the bye line");
-        known("sess.host.control.line_of_65537_bytes_ends_session",
-                "Link.pollControl ends the session without a bye when a line exceeds 65536 bytes (Ctl.readLines -> \"control line too long\" -> "
-                + "end(reason, false)); section 8 says \"a longer line is a protocol error and ends the session\" and 6.1 says every close "
-                + "for a protocol error writes a bye first");
-        known("sess.host.control.65536_bytes_without_newline_ends_session",
-                "same path as the 65537-byte line: 65536 bytes without a newline end the session (rlen >= MAX_LINE) without a bye, "
-                + "while 6.1 says every close for a protocol error writes one");
-    }
-
     private static final long STEP_WAIT_MS = 3000;
     private static final InetAddress LO = loopback();
     private static final Set<String> ALL_IDS = new HashSet<>();

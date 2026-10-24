@@ -218,14 +218,24 @@ public final class Link implements AutoCloseable {
             return null;
         }
 
-        /** Result of {@link #readLines}: complete lines, then the end reason (applies after them). */
+        /**
+         * Result of {@link #readLines}: complete lines, then the end reason (applies after them). A protocol error
+         * (a line over 65536 bytes, or not UTF-8) is answered with a bye (CONTRACT 8 and 6.1); a connection that
+         * merely ended is not.
+         */
         static final class Read {
             private final List<String> lines;
             private final String end;
+            private final boolean bye;
 
-            public Read(List<String> lines, String end) {
+            public Read(List<String> lines, String end, boolean bye) {
                 this.lines = lines;
                 this.end = end;
+                this.bye = bye;
+            }
+
+            public boolean bye() {
+                return bye;
             }
 
             public List<String> lines() {
@@ -268,14 +278,14 @@ public final class Link implements AutoCloseable {
                 }
                 if (nl < 0) break;
                 int len = nl + 1 - start;
-                if (len > Wire.MAX_LINE) return new Read(lines, "control line too long");
+                if (len > Wire.MAX_LINE) return new Read(lines, "control line too long", true);
                 try {
                     lines.add(StandardCharsets.UTF_8.newDecoder()
                             .onMalformedInput(CodingErrorAction.REPORT)
                             .onUnmappableCharacter(CodingErrorAction.REPORT)
                             .decode(ByteBuffer.wrap(rbuf, start, len)).toString());
                 } catch (CharacterCodingException e) {
-                    return new Read(lines, "control line is not UTF-8");
+                    return new Read(lines, "control line is not UTF-8", true);
                 }
                 start = nl + 1;
             }
@@ -283,8 +293,8 @@ public final class Link implements AutoCloseable {
                 System.arraycopy(rbuf, start, rbuf, 0, rlen - start);
                 rlen -= start;
             }
-            if (rlen >= Wire.MAX_LINE) return new Read(lines, "control line too long");
-            return new Read(lines, end);
+            if (rlen >= Wire.MAX_LINE) return new Read(lines, "control line too long", true);
+            return new Read(lines, end, false);
         }
 
         void closeQuietly() {
@@ -546,7 +556,7 @@ public final class Link implements AutoCloseable {
         }
         // A bye was handled above (it ends the session first), so an end of stream or a reset
         // that follows a bye never reaches this point as a failure.
-        if (read.end() != null) end(read.end(), false);
+        if (read.end() != null) end(read.end(), read.bye());
     }
 
     /** Handles one control line; a non-null result ends the session (length 2 = send a bye). */
