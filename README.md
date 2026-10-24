@@ -4,7 +4,9 @@ A pure-Java implementation of the **rewrite-bridge passthrough link protocol v1*
 with a Java runtime (a Minecraft mod, a Hytale plugin, a Java server) can be a **host** or a
 **guest** next to any other game or rewrite that speaks it. The protocol is defined by
 `docs/CONTRACT.md` in the `rewrite-bridge` repository (revision 4); this library is one
-implementation of it, tested against the Rust reference peers (`fake_host`, `fake_guest`).
+implementation of it, tested against the Rust reference peers (`fake_host`, `fake_guest`), which come with
+the [`rewrite-bridge`](https://crates.io/crates/rewrite-bridge) crate:
+`cargo install rewrite-bridge --version 0.2.1 --features link --examples`.
 
 - No dependencies, no native code, nothing from any game. Package: `dev.patodois.rewritelink`.
 - **Java 8 or newer**: compiled with `javac --release 8`, so it loads on Minecraft 1.7.10 and 1.12.2
