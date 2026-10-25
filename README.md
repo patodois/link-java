@@ -88,7 +88,7 @@ No account and no release upload is needed: [JitPack](https://jitpack.io) builds
 request and serves it as a Maven artifact (`jitpack.yml` asks it for JDK 21, which Gradle 9 needs). The coordinates are
 
 ```
-com.github.patodois:link-java:<tag>        e.g. com.github.patodois:link-java:v0.1.0
+com.github.patodois:link-java:<tag>        e.g. com.github.patodois:link-java:v0.1.2
 ```
 
 where `<tag>` is a tag of this repository (see the [releases and tags](https://github.com/patodois/link-java/tags)); `main-SNAPSHOT`
@@ -102,7 +102,7 @@ repositories {
     maven { url 'https://jitpack.io' }
 }
 dependencies {
-    implementation 'com.github.patodois:link-java:v0.1.0'
+    implementation 'com.github.patodois:link-java:v0.1.2'
 }
 ```
 
@@ -114,7 +114,7 @@ repositories {
     maven("https://jitpack.io")
 }
 dependencies {
-    implementation("com.github.patodois:link-java:v0.1.0")
+    implementation("com.github.patodois:link-java:v0.1.2")
 }
 ```
 
@@ -131,7 +131,7 @@ Maven:
 <dependency>
   <groupId>com.github.patodois</groupId>
   <artifactId>link-java</artifactId>
-  <version>v0.1.0</version>
+  <version>v0.1.2</version>
 </dependency>
 ```
 
