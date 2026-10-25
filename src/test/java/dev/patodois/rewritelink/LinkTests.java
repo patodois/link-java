@@ -517,6 +517,55 @@ public final class LinkTests {
             }
         });
 
+        // LinkRunner.close() must not interrupt the link thread: on Java 8 an NIO call with the interrupt status set closes the
+        // channel, which lost the bye (Minecraft 1.7.10 / 1.12.2 saw their peers report "connection closed"). The tick below
+        // is inside the callback when close() starts; it waits until the closing thread is parked in its join (so close() has
+        // passed the place where it used to interrupt), reports its own interrupt status, then sends a control line and a
+        // datagram as a game's per-tick publishing does.
+        test("LinkRunner.close() does not interrupt the link thread; the peer gets the bye", () -> {
+            LinkConfig hc = new LinkConfig("H");
+            hc.controlPort = 0;
+            try (Link host = Link.host(hc)) {
+                LinkConfig gc = new LinkConfig("G");
+                gc.controlPort = host.controlPort();
+                Link guest = Link.guest(gc);
+                check(until(3000, () -> {
+                    host.poll();
+                    guest.poll();
+                    return host.isConnected() && guest.isConnected();
+                }), "connect");
+                final java.util.concurrent.atomic.AtomicBoolean inTick = new java.util.concurrent.atomic.AtomicBoolean();
+                final java.util.concurrent.atomic.AtomicReference<Thread> closer = new java.util.concurrent.atomic.AtomicReference<>();
+                final java.util.concurrent.atomic.AtomicReference<Boolean> interrupted = new java.util.concurrent.atomic.AtomicReference<>();
+                LinkRunner runner = new LinkRunner(guest, e -> { }, () -> {
+                    if (!inTick.compareAndSet(false, true)) return;
+                    Thread c;
+                    while ((c = closer.get()) == null || c.getState() != Thread.State.TIMED_WAITING) Thread.yield();
+                    interrupted.set(Thread.currentThread().isInterrupted());
+                    try {
+                        guest.despawn(1);
+                        guest.sendPoses(Collections.singletonList(Wire.Pose.identity(1, Wire.nowUs())));
+                    } catch (WireException ignored) {
+                        // the peer's reason below tells what happened
+                    }
+                }, 2);
+                runner.start();
+                while (!inTick.get()) Thread.yield();
+                Thread c = new Thread(runner::close, "test-closer");
+                closer.set(c);
+                c.start();
+                c.join(10_000);
+                check(!c.isAlive(), "close() returned");
+                String[] lost = {null};
+                check(until(3000, () -> {
+                    for (LinkEvent e : host.poll()) if (e instanceof LinkEvent.Lost) lost[0] = ((LinkEvent.Lost) e).reason();
+                    return lost[0] != null;
+                }), "the host sees the session end");
+                check(lost[0].startsWith("peer said bye"), "the end is the peer's bye, not 'connection closed': " + lost[0]);
+                check(Boolean.FALSE.equals(interrupted.get()), "the link thread was not interrupted by close()");
+            }
+        });
+
         ReviewTests.run(args);
         PixelFileTests.run();
         VectorTests.run();
