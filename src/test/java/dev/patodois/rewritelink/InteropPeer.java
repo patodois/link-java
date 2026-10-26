@@ -287,7 +287,7 @@ public final class InteropPeer {
                     fail("Frame datagram " + k + " says " + fr + ", expected frame " + k + ", camera_seq " + camSeq + ", " + FRAME_W + "x" + FRAME_H);
                     good = false;
                 }
-                PixelFile.Frame got = reader.read(fr.frame(), fr.slot(), true);
+                PixelFile.Frame got = reader.read(fr, true);
                 if (got == null) {
                     fail("frame " + k + " could not be read from slot " + fr.slot());
                     good = false;

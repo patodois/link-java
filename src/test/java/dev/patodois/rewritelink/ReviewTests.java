@@ -586,7 +586,7 @@ final class ReviewTests {
 
     // ------------------------------------------------------------------ the shared JSON table
 
-    /** Documents and whether serde_json (the Rust side) accepts them; the same table is in rewrite-bridge's tests/link_review.rs. */
+    /** Documents and whether serde_json (the Rust side) accepts them, except for the NUL escape (see below); the same table is in rewrite-bridge's tests/link_review.rs. */
     static final Object[][] JSON_CORPUS = {
         // numbers
         {"0", true}, {"-0", true}, {"-1", true}, {"1.5", true}, {"1e5", true}, {"1E+5", true}, {"1e-5", true},
@@ -595,7 +595,9 @@ final class ReviewTests {
         {"1e", false}, {"1.0e+", false}, {"+1", false}, {"-", false}, {"- 1", false}, {"0x10", false},
         {"1e999", false}, {"Infinity", false}, {"NaN", false},
         // string escapes
-        {"\"\\u0041\"", true}, {"\"\\u00E9\"", true}, {"\"\\u0000\"", true}, {"\"\\/\"", true},
+        {"\"\\u0041\"", true}, {"\"\\u00E9\"", true}, {"\"\\/\"", true},
+        // serde_json takes a NUL escape; the contract (revision 5, section 8, "Syntax of a line", 4) does not, and Json follows the contract
+        {"\"\\u0000\"", false}, {"\"a\\u0000b\"", false}, {"{\"\\u0000\":1}", false},
         {"\"\\ud800\\udc00\"", true}, {"\"\\ud83d\\ude00\"", true}, {"\"\\uD834\\uDD1E\"", true},
         {"\"\\u004\"", false}, {"\"\\u00zz\"", false}, {"\"\\u+041\"", false}, {"\"\\u-041\"", false},
         {"\"\\u D800\"", false}, {"\"\\ud800\"", false}, {"\"\\udc00\"", false}, {"\"\\ud800x\"", false},

@@ -62,7 +62,7 @@ final class VectorTests {
      * rewrite-bridge (it copies the directory and prints {@code VECTORS_DIGEST = ...}) and paste the printed digest
      * here.
      */
-    static final String VECTORS_DIGEST = "858a48ffc10cd1ef4d2867844c34e9fa952b826d8034ff9cee88dcc062beba5d";
+    static final String VECTORS_DIGEST = "2cb6121126bd62ac753041c73a3ddb8d5c762c7adf0b749f7fa5672e22e90603";
 
     /** Vectors this implementation fails, id to reason. Empty when it passes them all. */
     static final Map<String, String> KNOWN_DISAGREEMENTS = new LinkedHashMap<>();
@@ -483,6 +483,15 @@ final class VectorTests {
         }
     }
 
+    static String kindOf(Wire.Datagram d) {
+        if (d instanceof Wire.Datagram.Heartbeat) return "heartbeat";
+        if (d instanceof Wire.Datagram.CameraMsg) return "camera";
+        if (d instanceof Wire.Datagram.PoseMsg) return "pose";
+        if (d instanceof Wire.Datagram.CollisionMsg) return "collision";
+        if (d instanceof Wire.Datagram.FrameMsg) return "frame";
+        return "unknown";
+    }
+
     static void checkDatagram(Map<String, Object> c) throws Exception {
         byte[] bytes = unhex(str(c.get("hex")));
         Wire.Decoded got = null;
@@ -502,6 +511,14 @@ final class VectorTests {
                         || ((Wire.Datagram.Unknown) got.body()).payloadLen() != num(c.get("payload_len"))) {
                     throw new Mismatch("expected an unknown kind " + c.get("kind") + ", got " + (got != null ? got.toString() : String.valueOf(err)));
                 }
+                return;
+            }
+            case "accept": {
+                // revision 5: a datagram of a known kind whose values the decoder does not check; only the kind is compared
+                if (got == null) throw new Mismatch("rejected (" + c.get("why") + "): " + err.getMessage());
+                String want = str(c.get("kind"));
+                String have = kindOf(got.body());
+                if (!want.equals(have)) throw new Mismatch("decoded as " + have + ", expected " + want);
                 return;
             }
             case "decode": {
@@ -574,7 +591,8 @@ final class VectorTests {
 
     static void checkRead(PixelFile.Reader reader, Map<String, Object> rd) throws Mismatch {
         boolean wantDepth = isTrue(rd.get("want_depth"));
-        PixelFile.Frame got = reader.read(u64(rd.get("frame")), (int) num(rd.get("slot")), wantDepth);
+        PixelFile.Frame got = reader.read(u64(rd.get("frame")), (int) num(rd.get("slot")), (int) num(rd.get("width")),
+                (int) num(rd.get("height")), wantDepth);
         switch (str(rd.get("expect"))) {
             case "skip":
                 if (got != null) throw new Mismatch("delivered " + got + " (" + rd.get("why") + ")");
@@ -811,18 +829,28 @@ final class VectorTests {
                 throw new Mismatch("create failed: " + e);
             }
             int i = 0;
+            long done = 0;
             for (Object wo : arr(w.get("writes"))) {
                 Map<String, Object> wr = obj(wo);
                 byte[] rgba = unhex(str(wr.get("rgba")));
                 float[] depth = wr.get("depth") == null ? null : f32s(wr.get("depth"), arr(wr.get("depth")).size());
-                long frame;
+                boolean refused = "refused".equals(wr.get("expect"));
+                long frame = 0;
+                RuntimeException failure = null;
                 try {
                     frame = writer.write(rgba, depth, (int) num(wr.get("width")), (int) num(wr.get("height")),
                             (int) num(wr.get("camera_seq")), u64(wr.get("time_us")));
                 } catch (IllegalArgumentException | IllegalStateException e) {
-                    throw new Mismatch("write " + i + " failed: " + e);
+                    failure = e;
                 }
-                if (frame != i + 1) throw new Mismatch("write " + i + " numbered the frame " + frame);
+                if (refused) {
+                    // revision 5: the write must fail and change nothing (no frame number, no slot touched)
+                    if (failure == null) throw new Mismatch("write " + i + " was accepted as frame " + frame + " (" + wr.get("why") + ")");
+                } else {
+                    if (failure != null) throw new Mismatch("write " + i + " failed: " + failure);
+                    done++;
+                    if (frame != done) throw new Mismatch("write " + i + " numbered the frame " + frame + ", expected " + done);
+                }
                 i++;
             }
             byte[] got = Files.readAllBytes(path);
@@ -959,7 +987,10 @@ final class VectorTests {
         }
         if (e instanceof LinkEvent.Collision) {
             LinkEvent.Collision c = (LinkEvent.Collision) e;
-            return new Ev("collision", map("query", Integer.toUnsignedLong(c.query()), "triangles", (long) c.triangles().size()));
+            List<Object> center = new ArrayList<>();
+            for (float v : c.center()) center.add((double) v);
+            return new Ev("collision", map("query", Integer.toUnsignedLong(c.query()), "triangles", (long) c.triangles().size(),
+                    "center", center, "radius", (double) c.radius()));
         }
         if (e instanceof LinkEvent.Frame) {
             Wire.FrameReady f = ((LinkEvent.Frame) e).frame();
@@ -1003,6 +1034,13 @@ final class VectorTests {
                 default:
                     throw new IllegalArgumentException("pattern " + pattern);
             }
+        }
+        if (pattern instanceof Number && actual instanceof Number) return ((Number) pattern).doubleValue() == ((Number) actual).doubleValue();
+        if (pattern instanceof List && actual instanceof List) {
+            List<?> p = (List<?>) pattern, a = (List<?>) actual;
+            if (p.size() != a.size()) return false;
+            for (int i = 0; i < p.size(); i++) if (!patternOk(a.get(i), p.get(i))) return false;
+            return true;
         }
         return pattern == null ? actual == null : pattern.equals(actual);
     }

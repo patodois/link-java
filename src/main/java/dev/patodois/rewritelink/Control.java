@@ -367,13 +367,16 @@ public interface Control {
         }
     }
 
-    /** The message as one JSON line, newline included. */
+    /**
+     * The message as one JSON line, newline included. A U+0000 in a string is written as U+FFFD (CONTRACT 8,
+     * "Syntax of a line", 4): a line with a NUL escape is a protocol error for every receiver.
+     */
     default String toLine() {
         StringBuilder b = new StringBuilder();
         if (this instanceof Hello) {
             Hello h = (Hello) this;
             b.append("{\"type\":\"hello\",\"role\":").append(Json.quote(h.role().wire))
-                    .append(",\"game\":").append(Json.quote(h.game()))
+                    .append(",\"game\":").append(Json.quote(ControlFields.clean(h.game())))
                     .append(",\"protocol\":").append(h.protocol())
                     .append(",\"min_protocol\":").append(h.minProtocol())
                     .append(",\"udp_port\":").append(h.udpPort())
@@ -384,26 +387,26 @@ public interface Control {
         } else if (this instanceof Spawn) {
             Spawn s = (Spawn) this;
             b.append("{\"type\":\"spawn\",\"entity\":").append(s.entity())
-                    .append(",\"provider\":").append(Json.quote(s.provider()))
-                    .append(",\"asset\":").append(Json.quote(s.asset()));
-            if (s.name() != null) b.append(",\"name\":").append(Json.quote(s.name()));
+                    .append(",\"provider\":").append(Json.quote(ControlFields.clean(s.provider())))
+                    .append(",\"asset\":").append(Json.quote(ControlFields.clean(s.asset())));
+            if (s.name() != null) b.append(",\"name\":").append(Json.quote(ControlFields.clean(s.name())));
             b.append('}');
         } else if (this instanceof Despawn) {
             b.append("{\"type\":\"despawn\",\"entity\":").append(((Despawn) this).entity()).append('}');
         } else if (this instanceof Input) {
             Input in = (Input) this;
             b.append("{\"type\":\"input\",\"focus\":").append(Json.quote(in.focus().wire));
-            if (in.reason() != null) b.append(",\"reason\":").append(Json.quote(in.reason()));
+            if (in.reason() != null) b.append(",\"reason\":").append(Json.quote(ControlFields.clean(in.reason())));
             b.append('}');
         } else if (this instanceof FrameChannel) {
             FrameChannel f = (FrameChannel) this;
-            b.append("{\"type\":\"frame_channel\",\"path\":").append(Json.quote(f.path()))
+            b.append("{\"type\":\"frame_channel\",\"path\":").append(Json.quote(ControlFields.clean(f.path())))
                     .append(",\"width\":").append(f.width()).append(",\"height\":").append(f.height())
                     .append(",\"slots\":").append(f.slots()).append('}');
         } else if (this instanceof Bye) {
-            b.append("{\"type\":\"bye\",\"reason\":").append(Json.quote(((Bye) this).reason())).append('}');
+            b.append("{\"type\":\"bye\",\"reason\":").append(Json.quote(ControlFields.clean(((Bye) this).reason()))).append('}');
         } else if (this instanceof Unknown) {
-            b.append("{\"type\":").append(Json.quote(((Unknown) this).type())).append('}');
+            b.append("{\"type\":").append(Json.quote(ControlFields.clean(((Unknown) this).type()))).append('}');
         } else {
             throw new IllegalStateException("not a control message of this library: " + this);
         }
@@ -466,6 +469,11 @@ public interface Control {
 /** Field access for {@link Control#parse} (an interface cannot have private methods before Java 9). */
 final class ControlFields {
     private ControlFields() {}
+
+    /** A string as the wire carries it: U+0000 becomes U+FFFD (CONTRACT 8, "Syntax of a line", 4). */
+    static String clean(String s) {
+        return s.indexOf('\0') < 0 ? s : s.replace('\0', '\uFFFD');
+    }
 
     static String str(Map<String, Object> o, String k) throws WireException {
         Object v = o.get(k);

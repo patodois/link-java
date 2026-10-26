@@ -3,7 +3,7 @@
 A pure-Java implementation of the **rewrite-bridge passthrough link protocol v1**, so that a game
 with a Java runtime (a Minecraft mod, a Hytale plugin, a Java server) can be a **host** or a
 **guest** next to any other game or rewrite that speaks it. The protocol is defined by
-`docs/CONTRACT.md` in the `rewrite-bridge` repository (revision 4); this library is one
+`docs/CONTRACT.md` in the `rewrite-bridge` repository (revision 5); this library is one
 implementation of it, tested against the Rust reference peers (`fake_host`, `fake_guest`), which come with
 the [`rewrite-bridge`](https://crates.io/crates/rewrite-bridge) crate:
 `cargo install rewrite-bridge --version 0.2.1 --features link --examples`.
@@ -39,7 +39,7 @@ plane), and a `Writer` for the sending side. `frame_channel` and `Frame` are par
 
 The seqlock has to work without `VarHandle` and without `sun.misc.Unsafe`, which Java 8 does not offer
 or this library does not want. (`PixelFile.Writer.close()` is the one place that reaches for Unsafe, by
-reflection and only to unmap the file; see "Contract revision 4" below.) The `lock` word is accessed through a `LongBuffer` view of the mapping
+reflection and only to unmap the file; see "Contract revisions 4 and 5" below.) The `lock` word is accessed through a `LongBuffer` view of the mapping
 (one aligned 64-bit access on every platform; `ByteBuffer.getLong` can be assembled byte by byte on a
 Java 8 that does not know the CPU), and the contract's release and acquire fences are a full fence made
 from a volatile read-modify-write (`AtomicInteger.incrementAndGet`), which Java 8 specifies as a total
@@ -48,10 +48,29 @@ long comment at the top of `PixelFile.java` has the details, and `PixelFileTests
 against a reader thread (two slots, so the writer keeps lapping the reader) to check that a torn copy is
 never accepted.
 
-## Contract revision 4
+## Contract revisions 4 and 5
 
-What the code review of both implementations changed, in the order of the contract (section 12 of
-`CONTRACT.md` has the reasons; the protocol stays version 1):
+Revision 5 (version 0.1.3) only makes the library stricter about what it accepts and sends; no message,
+field or byte layout changed, so the protocol stays version 1 and a revision 4 peer still interoperates:
+
+- **No NUL in a control line.** A `\u0000` escape in any string of a control line (a value, a key, an unknown
+  field, a nested one, a value that a later duplicate key overrides) is a protocol error. A string handed to
+  the encoder (spawn `provider`, `asset` and `name`, `hello` `game`, `bye` and `input` `reason`,
+  `frame_channel` `path`) has U+0000 replaced by U+FFFD before it is written.
+- **At most 4096 collision chunks.** `Wire.MAX_COLLISION_CHUNKS` is 4096, so a snapshot has at most
+  925696 triangles (32 MiB on the wire). A datagram with a larger `chunk_count` is malformed (it was
+  65535 before), `Wire.encode` and `Wire.chunks` refuse it, and `Link.sendCollision` throws a
+  `WireException` for a bigger snapshot before it copies or queues anything. Send the triangles nearest to
+  the centre instead.
+- **Frame sizes are checked against the datagram.** `PixelFile.Reader.read(FrameReady, boolean)` (and
+  `read(frame, slot, width, height, wantDepth)`) skips a frame, before copying a pixel, when the `Frame`
+  datagram's width or height is 0 or above the file's, when the slot header's is, or when the two differ.
+  The slot need not be `frame % slots`. `read(frame, slot, wantDepth)` is still there but cannot compare
+  with the datagram, so use the new calls for every `LinkEvent.Frame`. The writer refuses a frame of
+  0 x 0 or larger than the file, as before.
+
+Revision 4: what the code review of both implementations changed, in the order of the contract (section
+12 of `CONTRACT.md` has the reasons):
 
 - **`Link.sendCollision` queues.** It returns the query number at once, and each `poll()` sends at most
   32 collision datagrams (`Wire.COLLISION_PER_POLL`), so keep polling after a big snapshot. A snapshot
@@ -88,7 +107,7 @@ No account and no release upload is needed: [JitPack](https://jitpack.io) builds
 request and serves it as a Maven artifact (`jitpack.yml` asks it for JDK 21, which Gradle 9 needs). The coordinates are
 
 ```
-com.github.patodois:link-java:<tag>        e.g. com.github.patodois:link-java:v0.1.2
+com.github.patodois:link-java:<tag>        e.g. com.github.patodois:link-java:v0.1.3
 ```
 
 where `<tag>` is a tag of this repository (see the [releases and tags](https://github.com/patodois/link-java/tags)); `main-SNAPSHOT`
@@ -102,7 +121,7 @@ repositories {
     maven { url 'https://jitpack.io' }
 }
 dependencies {
-    implementation 'com.github.patodois:link-java:v0.1.2'
+    implementation 'com.github.patodois:link-java:v0.1.3'
 }
 ```
 
@@ -114,7 +133,7 @@ repositories {
     maven("https://jitpack.io")
 }
 dependencies {
-    implementation("com.github.patodois:link-java:v0.1.2")
+    implementation("com.github.patodois:link-java:v0.1.3")
 }
 ```
 
@@ -131,7 +150,7 @@ Maven:
 <dependency>
   <groupId>com.github.patodois</groupId>
   <artifactId>link-java</artifactId>
-  <version>v0.1.2</version>
+  <version>v0.1.3</version>
 </dependency>
 ```
 
@@ -186,7 +205,7 @@ The tests are a plain runner (`LinkTests`, no JUnit): they encode and decode the
 example byte for byte, check every layout offset and length, reject malformed input (plus a
 20,000-case fuzz), and run live sessions in one process (handshake, state flow, stale drops,
 `busy`, bad hello, watchdog, clean bye with half-close, foreign addresses), then `ReviewTests` (one
-regression test per finding of the revision 4 review) and `PixelFileTests`
+regression test per finding of the revision 4 review, and the revision 5 rules) and `PixelFileTests`
 (layout, depth plane, refusals, and the writer-against-reader contention test). They are compiled
 for Java 8 too and can run on a Java 8 runtime:
 

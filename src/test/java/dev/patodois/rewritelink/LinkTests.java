@@ -51,6 +51,28 @@ public final class LinkTests {
         if (!java.util.Objects.equals(a, b)) throw new AssertionError(what + ": expected " + b + " but was " + a);
     }
 
+    /** A list of {@code size} elements that are all {@code element}: it never holds them, so a huge one costs nothing. A null element makes every read an error. */
+    static final class FixedList extends java.util.AbstractList<float[]> {
+        private final int size;
+        private final float[] element;
+
+        FixedList(int size, float[] element) {
+            this.size = size;
+            this.element = element;
+        }
+
+        @Override
+        public float[] get(int i) {
+            if (element == null) throw new AssertionError("the triangles were read");
+            return element;
+        }
+
+        @Override
+        public int size() {
+            return size;
+        }
+    }
+
     static byte[] hex(String s) {
         String h = s.replace(" ", "");
         byte[] out = new byte[h.length() / 2];
@@ -563,6 +585,176 @@ public final class LinkTests {
                 }), "the host sees the session end");
                 check(lost[0].startsWith("peer said bye"), "the end is the peer's bye, not 'connection closed': " + lost[0]);
                 check(Boolean.FALSE.equals(interrupted.get()), "the link thread was not interrupted by close()");
+            }
+        });
+
+        // ----- contract revision 5: stricter validation (the vectors cover the same ground; these name the rules)
+
+        test("revision 5: a NUL escape is a protocol error in any string of a control line", () -> {
+            final String bs = "\\";
+            String nul = bs + "u0000";
+            String[] bad = {
+                "{\"type\":\"bye\",\"reason\":\"" + nul + "\"}",
+                "{\"type\":\"bye\",\"reason\":\"a" + nul + "b\"}",
+                "{\"type\":\"spawn\",\"entity\":1,\"provider\":\"P\",\"asset\":\"a\",\"name\":\"" + nul + "a\"}",
+                "{\"type\":\"despawn\",\"entity\":1,\"x\":\"" + nul + "\"}", // an unknown field
+                "{\"type\":\"despawn\",\"entity\":1,\"a" + nul + "b\":1}", // a key
+                "{\"type\":\"despawn\",\"entity\":1,\"x\":{\"y\":[\"" + nul + "\"]}}", // nested
+                "{\"type\":\"despawn\",\"entity\":1,\"x\":\"" + nul + "\",\"x\":1}", // overridden by a later duplicate key
+                "{\"type\":\"nope\",\"x\":\"" + nul + "\"}", // an unknown type
+            };
+            for (String line : bad) {
+                boolean threw = false;
+                try {
+                    Control.parse(line);
+                } catch (WireException e) {
+                    threw = true;
+                }
+                check(threw, "accepted " + line);
+            }
+            // An escaped backslash followed by the characters u0000 is text, not a NUL escape.
+            Control ok = Control.parse("{\"type\":\"bye\",\"reason\":\"" + bs + bs + "u0000\"}");
+            eq(((Control.Bye) ok).reason(), bs + "u0000", "a backslash and the characters u0000");
+            // Other escapes still work, and so does a NUL-looking name that is not one.
+            eq(((Control.Bye) Control.parse("{\"type\":\"bye\",\"reason\":\"" + bs + "u0001" + bs + "u00e9\"}")).reason(), "\u0001é", "other escapes");
+        });
+
+        test("revision 5: a sender writes U+FFFD for U+0000 in every string it encodes", () -> {
+            Control[] messages = {
+                new Control.Hello(Role.HOST, "ga\0me", 1, 1, 4000, 250, 2000, 7L),
+                new Control.Spawn(1, "pro\0vider", "as\0set", "na\0me"),
+                new Control.Input(Role.GUEST, "re\0ason"),
+                new Control.FrameChannel("/tmp/pa\0th", 4, 2, 3),
+                new Control.Bye("re\0ason"),
+                new Control.Unknown("ty\0pe"),
+            };
+            for (Control m : messages) {
+                String line = m.toLine();
+                check(line.indexOf('\0') < 0, "a NUL character in " + line);
+                check(!line.contains("\\u0000"), "a NUL escape in " + line);
+                check(line.contains("�") || line.contains("\\ufffd") || line.contains("\\uFFFD"), "no U+FFFD in " + line);
+                if (!(m instanceof Control.Unknown)) {
+                    // and a receiver accepts what was written
+                    Control back = Control.parse(line);
+                    check(back.toLine().equals(line), "round trip of " + line);
+                }
+            }
+            eq(((Control.Spawn) Control.parse(messages[1].toLine())).asset(), "as�set", "asset");
+            eq(((Control.Spawn) Control.parse(messages[1].toLine())).name(), "na�me", "name");
+            eq(((Control.Bye) Control.parse(messages[4].toLine())).reason(), "re�ason", "bye reason");
+            eq(((Control.FrameChannel) Control.parse(messages[3].toLine())).path(), "/tmp/pa�th", "path");
+            // A string without a NUL is written as it was.
+            eq(((Control.Bye) Control.parse(new Control.Bye("plain é").toLine())).reason(), "plain é", "plain text");
+
+            // End to end: the peer receives the replaced string and the session goes on.
+            try (ReviewTests.Pair p = new ReviewTests.Pair()) {
+                p.guest.spawn(new Control.Spawn(5, "P", "a\0b", null));
+                List<LinkEvent> got = new ArrayList<>();
+                check(until(3000, () -> {
+                    p.guest.poll();
+                    got.addAll(p.host.poll());
+                    for (LinkEvent e : got) if (e instanceof LinkEvent.Spawn) return true;
+                    return false;
+                }), "the host sees the spawn");
+                for (LinkEvent e : got) {
+                    if (e instanceof LinkEvent.Spawn) eq(((LinkEvent.Spawn) e).spawn().asset(), "a�b", "the asset the host received");
+                }
+                check(p.host.isConnected() && p.guest.isConnected(), "the session survives");
+            }
+        });
+
+        test("revision 5: chunk_count is at most MAX_COLLISION_CHUNKS = 4096 (decoder, encoder, chunking)", () -> {
+            eq(Wire.MAX_COLLISION_CHUNKS, 4096, "the constant");
+            Header h = new Header(1, 0, 7, 1, 5);
+            float[] c3 = new float[3];
+            Wire.CollisionChunk ok = new Wire.CollisionChunk(1, 4095, 4096, c3, 1f, new ArrayList<float[]>());
+            byte[] good = Wire.encode(h, new Datagram.CollisionMsg(ok));
+            Wire.Decoded d = Wire.decode(good, good.length);
+            eq(((Datagram.CollisionMsg) d.body()).chunk().chunkCount(), 4096, "4096 chunks decode");
+            // chunk_count is the u16 at payload offset 6: patch it to 4097, 65535
+            for (int count : new int[] {4097, 9281, 65535}) {
+                for (int index : new int[] {0, count - 1}) {
+                    byte[] bad = good.clone();
+                    bad[Wire.HEADER_LEN + 4] = (byte) index;
+                    bad[Wire.HEADER_LEN + 5] = (byte) (index >> 8);
+                    bad[Wire.HEADER_LEN + 6] = (byte) count;
+                    bad[Wire.HEADER_LEN + 7] = (byte) (count >> 8);
+                    boolean threw = false;
+                    try {
+                        Wire.decode(bad, bad.length);
+                    } catch (WireException e) {
+                        threw = true;
+                    }
+                    check(threw, "chunk " + index + " of " + count + " must be malformed");
+                }
+            }
+            boolean threw = false;
+            try {
+                Wire.encode(h, new Datagram.CollisionMsg(new Wire.CollisionChunk(1, 0, 4097, c3, 1f, new ArrayList<float[]>())));
+            } catch (WireException e) {
+                threw = true;
+            }
+            check(threw, "the encoder refuses chunk_count 4097");
+
+            // chunking: exactly 4096 chunks is fine, one triangle more is refused
+            final float[] tri = new float[9];
+            int limit = Wire.MAX_COLLISION_CHUNKS * Wire.MAX_TRIANGLES;
+            eq(limit, 925696, "4096 * 226");
+            List<Wire.CollisionChunk> chunks = Wire.chunks(1, c3, 1f, new FixedList(limit, tri));
+            eq(chunks.size(), 4096, "chunks of a full snapshot");
+            eq(chunks.get(4095).chunkCount(), 4096, "chunk_count");
+            threw = false;
+            try {
+                Wire.chunks(1, c3, 1f, new FixedList(limit + 1, tri));
+            } catch (WireException e) {
+                threw = true;
+            }
+            check(threw, "925697 triangles need 4097 chunks");
+        });
+
+        test("revision 5: sendCollision refuses more than 4096 chunks before touching the triangles", () -> {
+            try (ReviewTests.Pair p = new ReviewTests.Pair()) {
+                List<float[]> small = Collections.singletonList(new float[9]);
+                int q1 = p.host.sendCollision(new float[3], 1f, small);
+                // a list that fails if anything reads or copies it: only its size may be looked at
+                List<float[]> huge = new FixedList(Wire.MAX_COLLISION_CHUNKS * Wire.MAX_TRIANGLES + 1, null);
+                boolean threw = false;
+                try {
+                    p.host.sendCollision(new float[3], 1f, huge);
+                } catch (WireException e) {
+                    threw = true;
+                }
+                check(threw, "925697 triangles must be refused");
+                eq(p.host.sendCollision(new float[3], 1f, small), q1 + 1, "a refused snapshot does not use a query number");
+                // and the one that was queued before it still goes out
+                List<LinkEvent> got = new ArrayList<>();
+                check(until(3000, () -> {
+                    p.host.poll();
+                    got.addAll(p.guest.poll());
+                    for (LinkEvent e : got) if (e instanceof LinkEvent.Collision) return true;
+                    return false;
+                }), "a valid snapshot after the refusal arrives");
+            }
+        });
+
+        test("revision 5: PixelFile.Reader.read(FrameReady) skips a frame whose size the datagram and the slot disagree on", () -> {
+            java.nio.file.Path dir = java.nio.file.Files.createTempDirectory("rev5-test");
+            dir.toFile().deleteOnExit();
+            java.nio.file.Path path = dir.resolve("f.frames");
+            try (PixelFile.Writer w = new PixelFile.Writer(path, 4, 2, 3, false)) {
+                byte[] rgba = new byte[4 * 2 * 4];
+                Arrays.fill(rgba, (byte) 9);
+                long f = w.write(rgba, null, 4, 2, 77, 5L);
+                int slot = (int) (f % 3);
+                try (PixelFile.Reader r = PixelFile.Reader.open(path)) {
+                    check(r.read(new Wire.FrameReady(f, slot, 77, 4, 2), false) != null, "the matching size reads");
+                    for (int[] wh : new int[][] {{3, 2}, {4, 1}, {0, 0}, {0, 2}, {4, 0}, {5, 2}, {4, 3}, {-1, 2}}) {
+                        check(r.read(new Wire.FrameReady(f, slot, 77, wh[0], wh[1]), false) == null,
+                                "the datagram says " + wh[0] + "x" + wh[1] + ", the slot 4x2: skipped");
+                        check(r.read(f, slot, wh[0], wh[1], true) == null, "same for the long form");
+                    }
+                    check(r.read(f, slot, true) != null, "the form without a size reads what the slot header says");
+                }
             }
         });
 

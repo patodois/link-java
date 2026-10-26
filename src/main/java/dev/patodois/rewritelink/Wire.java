@@ -30,6 +30,12 @@ public final class Wire {
     public static final int TRIANGLE_LEN = 36;
     public static final int MAX_TRIANGLES = (MAX_DATAGRAM - HEADER_LEN - COLLISION_HEADER_LEN) / TRIANGLE_LEN; // 226
     public static final int FRAME_LEN = 24;
+    /**
+     * Most chunks one collision snapshot may have, so the largest {@code chunk_count} (CONTRACT.md 9.5, revision
+     * 5): 4096 chunks are {@code 4096 * 226 = 925696} triangles, 32 MiB on the wire. A datagram with a larger
+     * {@code chunk_count} is malformed; a sender whose snapshot needs more chunks does not send it.
+     */
+    public static final int MAX_COLLISION_CHUNKS = 4096;
     public static final int MAX_LINE = 65536;
     public static final int MAX_PENDING_CONTROL = 1 << 20;
     public static final int LINGER_MS = 200;
@@ -780,9 +786,9 @@ public final class Wire {
             CollisionChunk c = ((Datagram.CollisionMsg) body).chunk();
             int n = c.triangles().size();
             if (n > MAX_TRIANGLES) throw new WireException("triangle count " + n);
-            if (c.chunkCount() < 1 || c.chunkCount() > 0xFFFF || c.chunkIndex() < 0 || c.chunkIndex() >= c.chunkCount()) {
+            if (c.chunkCount() < 1 || c.chunkCount() > MAX_COLLISION_CHUNKS || c.chunkIndex() < 0 || c.chunkIndex() >= c.chunkCount()) {
                 throw new WireException("bad value: chunk_index " + c.chunkIndex() + " of " + c.chunkCount()
-                        + " (chunk_index must be below chunk_count, both fit 16 bits)");
+                        + " (chunk_index must be below chunk_count, and chunk_count is 1 to " + MAX_COLLISION_CHUNKS + ")");
             }
             payload = COLLISION_HEADER_LEN + TRIANGLE_LEN * n;
         } else if (body instanceof Datagram.FrameMsg) {
@@ -945,6 +951,7 @@ public final class Wire {
                 long n = Integer.toUnsignedLong(b.getInt());
                 b.getInt();
                 if (count == 0 || index >= count) throw new WireException("bad value: chunk_index");
+                if (count > MAX_COLLISION_CHUNKS) throw new WireException("bad value: chunk_count " + count + " is above " + MAX_COLLISION_CHUNKS);
                 if (n > MAX_TRIANGLES) throw new WireException("bad value: triangle_count");
                 exact(kind, payload, COLLISION_HEADER_LEN + TRIANGLE_LEN * (int) n);
                 List<float[]> tris = new ArrayList<>((int) n);
@@ -972,11 +979,21 @@ public final class Wire {
         }
     }
 
-    /** Splits a collision snapshot into datagram-sized chunks (an empty one still gives one chunk). */
+    /**
+     * Splits a collision snapshot into datagram-sized chunks (an empty one still gives one chunk).
+     *
+     * @throws WireException if the snapshot needs more than {@link #MAX_COLLISION_CHUNKS} chunks, that is
+     *         more than {@code MAX_COLLISION_CHUNKS * MAX_TRIANGLES} (925696) triangles; this is checked
+     *         from the size alone, before anything is copied or allocated
+     */
     public static List<CollisionChunk> chunks(int query, float[] center, float radius, List<float[]> tris)
             throws WireException {
-        int count = Math.max(1, (tris.size() + MAX_TRIANGLES - 1) / MAX_TRIANGLES);
-        if (count > 0xFFFF) throw new WireException("too many triangles");
+        long needed = Math.max(1L, ((long) tris.size() + MAX_TRIANGLES - 1) / MAX_TRIANGLES);
+        if (needed > MAX_COLLISION_CHUNKS) {
+            throw new WireException("too many triangles: " + tris.size() + " need " + needed + " chunks, a snapshot has at most "
+                    + MAX_COLLISION_CHUNKS + " (" + (long) MAX_COLLISION_CHUNKS * MAX_TRIANGLES + " triangles)");
+        }
+        int count = (int) needed;
         List<CollisionChunk> out = new ArrayList<>(count);
         for (int i = 0; i < count; i++) {
             int from = Math.min(tris.size(), i * MAX_TRIANGLES);

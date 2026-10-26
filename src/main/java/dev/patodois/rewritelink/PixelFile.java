@@ -276,10 +276,40 @@ public final class PixelFile {
         }
 
         /**
+         * Copies the slot a {@code Frame} datagram announces: {@link #read(long, int, int, int, boolean)} with the
+         * datagram's own {@code frame}, {@code slot}, {@code width} and {@code height}. This is the call a
+         * receiver makes for every {@link LinkEvent.Frame}.
+         */
+        public Frame read(Wire.FrameReady ready, boolean wantDepth) {
+            return read(ready.frame(), ready.slot(), ready.width(), ready.height(), wantDepth);
+        }
+
+        /**
          * Copies slot {@code slot} out if it holds frame {@code frame} and was not written while
-         * copying; null otherwise (skip the frame and wait for the next one).
+         * copying; null otherwise (skip the frame and wait for the next one). {@code width} and
+         * {@code height} are the ones the {@code Frame} datagram announced (CONTRACT.md 9.6, revision 5):
+         * the frame is skipped, before any pixel is copied, if the datagram's size is 0 or above the
+         * file's, if the slot header's size is 0 or above the file's, or if the slot header's size is not
+         * the datagram's. The slot need not be {@code frame % slots}: a slot the writer has numbered
+         * otherwise is read like any other.
+         */
+        public Frame read(long frame, int slot, int width, int height, boolean wantDepth) {
+            if (width < 1 || height < 1 || width > this.width || height > this.height) return null;
+            return readSlot(frame, slot, width, height, wantDepth);
+        }
+
+        /**
+         * Like {@link #read(long, int, int, int, boolean)} but without the datagram's size: the size is
+         * whatever the slot header says (it is still checked against the file's). Prefer the overloads
+         * that take the size of the {@code Frame} datagram, which also skip a frame whose slot header and
+         * datagram disagree.
          */
         public Frame read(long frame, int slot, boolean wantDepth) {
+            return readSlot(frame, slot, 0, 0, wantDepth);
+        }
+
+        /** {@code dw} and {@code dh} are the datagram's size, or 0 when the caller has none. */
+        private Frame readSlot(long frame, int slot, int dw, int dh, boolean wantDepth) {
             if (slot < 0 || slot >= slots) return null;
             if (isGone()) {
                 skippedGone++;
@@ -294,7 +324,7 @@ public final class PixelFile {
             }
             long f = map.getLong(base + 8), timeUs = map.getLong(base + 16);
             int camSeq = map.getInt(base + 24), w = map.getInt(base + 28), h = map.getInt(base + 32);
-            if (f != frame || w < 1 || h < 1 || w > width || h > height) {
+            if (f != frame || w < 1 || h < 1 || w > width || h > height || (dw != 0 && (w != dw || h != dh))) {
                 skippedOtherFrame++;
                 return null;
             }

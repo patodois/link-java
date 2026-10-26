@@ -853,6 +853,13 @@ public final class Link implements AutoCloseable {
      * chunks go out {@link Wire#COLLISION_PER_POLL} per {@link #poll()}, so a big snapshot never
      * overflows the receiver's socket buffer; a snapshot queued while an older one still has chunks
      * waiting replaces them (the receiver would discard the old query anyway).
+     *
+     * <p>A snapshot has at most {@link Wire#MAX_COLLISION_CHUNKS} chunks, {@code 4096 * 226 = 925696}
+     * triangles (CONTRACT.md 9.5, revision 5). A bigger one is refused with a {@link WireException} before
+     * anything is copied or queued, and the queue and the query number stay as they were; send the
+     * triangles nearest to {@code center} instead.
+     *
+     * @throws WireException if the link is not connected or the snapshot is over the limit
      */
     public synchronized int sendCollision(float[] center, float radius, List<float[]> triangles)
             throws WireException {

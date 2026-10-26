@@ -96,7 +96,7 @@ public final class LinkDemo {
                     }
                 } else if (e instanceof LinkEvent.Frame) {
                     Wire.FrameReady fr = ((LinkEvent.Frame) e).frame();
-                    PixelFile.Frame f = reader == null ? null : reader.read(fr.frame(), fr.slot(), true);
+                    PixelFile.Frame f = reader == null ? null : reader.read(fr, true);
                     if (f == null) {
                         framesMissed++;
                     } else {

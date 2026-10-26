@@ -14,7 +14,10 @@ import java.util.Map;
  * line that one implementation takes and the other refuses is a way to make them disagree: numbers
  * follow the JSON grammar (no leading zeros, no {@code 1.}, no {@code +1}), {@code -0} is the
  * float negative zero (so it is no integer), a number beyond the range of a double is an error,
- * a unicode escape takes exactly four hex digits and surrogate escapes must come as a valid pair, and
+ * a unicode escape takes exactly four hex digits and surrogate escapes must come as a valid pair, a
+ * NUL escape (backslash, {@code u}, four zeros) is an error in any string, key or value (CONTRACT 8,
+ * revision 5: it is refused wherever it is, also in an unknown field and in a value that a later
+ * duplicate key overrides), and
  * arrays and objects may nest {@link #MAX_NESTING} deep.
  */
 final class Json {
@@ -191,6 +194,9 @@ final class Json {
                         break;
                     case 'u': {
                         char u = hex4();
+                        // CONTRACT 8, "Syntax of a line", 4: U+0000 is an error in any string, key or value (a
+                        // consumer with NUL-terminated strings, like the C one, could not hold it).
+                        if (u == 0) throw new JsonException("U+0000 in a string");
                         if (Character.isHighSurrogate(u)) {
                             // It must be followed by an escaped low surrogate.
                             if (i + 1 >= s.length() || s.charAt(i) != '\\' || s.charAt(i + 1) != 'u') {
