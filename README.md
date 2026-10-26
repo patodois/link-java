@@ -6,7 +6,7 @@ with a Java runtime (a Minecraft mod, a Hytale plugin, a Java server) can be a *
 `docs/CONTRACT.md` in the `rewrite-bridge` repository (revision 5); this library is one
 implementation of it, tested against the Rust reference peers (`fake_host`, `fake_guest`), which come with
 the [`rewrite-bridge`](https://crates.io/crates/rewrite-bridge) crate:
-`cargo install rewrite-bridge --version 0.2.1 --features link --examples`.
+`cargo install rewrite-bridge --version 0.2.3 --features link --examples`.
 
 - No dependencies, no native code, nothing from any game. Package: `dev.patodois.rewritelink`.
 - **Java 8 or newer**: compiled with `javac --release 8`, so it loads on Minecraft 1.7.10 and 1.12.2
@@ -65,8 +65,9 @@ field or byte layout changed, so the protocol stays version 1 and a revision 4 p
 - **Frame sizes are checked against the datagram.** `PixelFile.Reader.read(FrameReady, boolean)` (and
   `read(frame, slot, width, height, wantDepth)`) skips a frame, before copying a pixel, when the `Frame`
   datagram's width or height is 0 or above the file's, when the slot header's is, or when the two differ.
-  The slot need not be `frame % slots`. `read(frame, slot, wantDepth)` is still there but cannot compare
-  with the datagram, so use the new calls for every `LinkEvent.Frame`. The writer refuses a frame of
+  The slot need not be `frame % slots`, and frame 0 is always skipped. `read(frame, slot, wantDepth)` is kept so that
+  existing programs still build, but it cannot compare with the datagram and is **not conformant** to contract
+  section 9.6 (reader step 2): use the new calls for every `LinkEvent.Frame`. The writer refuses a frame of
   0 x 0 or larger than the file, as before.
 
 Revision 4: what the code review of both implementations changed, in the order of the contract (section

@@ -62,7 +62,7 @@ final class VectorTests {
      * rewrite-bridge (it copies the directory and prints {@code VECTORS_DIGEST = ...}) and paste the printed digest
      * here.
      */
-    static final String VECTORS_DIGEST = "2cb6121126bd62ac753041c73a3ddb8d5c762c7adf0b749f7fa5672e22e90603";
+    static final String VECTORS_DIGEST = "815d4f09e6d15f17dfcfedcf96865c5cfd60e170d3f71fb97f3adc0edc200fd9";
 
     /** Vectors this implementation fails, id to reason. Empty when it passes them all. */
     static final Map<String, String> KNOWN_DISAGREEMENTS = new LinkedHashMap<>();

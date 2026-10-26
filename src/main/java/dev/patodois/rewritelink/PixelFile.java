@@ -300,9 +300,10 @@ public final class PixelFile {
 
         /**
          * Like {@link #read(long, int, int, int, boolean)} but without the datagram's size: the size is
-         * whatever the slot header says (it is still checked against the file's). Prefer the overloads
-         * that take the size of the {@code Frame} datagram, which also skip a frame whose slot header and
-         * datagram disagree.
+         * whatever the slot header says (it is still checked against the file's). Kept so that existing
+         * programs still build; it is <b>not conformant</b> to CONTRACT.md 9.6 (reader step 2), because it
+         * cannot skip a frame whose slot header and datagram disagree. Use the overloads that take the size
+         * of the {@code Frame} datagram.
          */
         public Frame read(long frame, int slot, boolean wantDepth) {
             return readSlot(frame, slot, 0, 0, wantDepth);
@@ -311,6 +312,10 @@ public final class PixelFile {
         /** {@code dw} and {@code dh} are the datagram's size, or 0 when the caller has none. */
         private Frame readSlot(long frame, int slot, int dw, int dh, boolean wantDepth) {
             if (slot < 0 || slot >= slots) return null;
+            if (frame == 0) { // never delivered (CONTRACT.md 9.6, reader step 0), whatever the slot holds
+                skippedOtherFrame++;
+                return null;
+            }
             if (isGone()) {
                 skippedGone++;
                 return null;
