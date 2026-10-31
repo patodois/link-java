@@ -18,11 +18,18 @@ import dev.patodois.rewritelink.Wire.WireException;
  *
  * <pre>
  * java -cp build/classes/java/main:build/classes/java/test dev.patodois.rewritelink.InteropPeer host --port 47810 --label java
+ * java -cp ... InteropPeer host  --port 0 --label java --endpoint FILE [--expect-unauthorized]
+ * java -cp ... InteropPeer guest --port 0 --label java --endpoint FILE [--wrong-token]
  * </pre>
  *
  * <p>It prints log lines of its own choosing and, as its last stdout line, {@code RBL-INTEROP-RESULT {json}}. The
  * exit status is 0 when every check passed, 1 when one failed, 2 for a bad command line. This library has no
  * counters, so {@code stats} in the result is {@code null}.
+ *
+ * <p>With {@code --endpoint} (contract revision 6, section 6.2) the host's library generates a token and writes the
+ * file after binding, and the guest's library reads it before connecting; with {@code --expect-unauthorized} and
+ * {@code --wrong-token} the guest connects with a token that is not the host's and both sides expect
+ * {@code unauthorized}. The peer never prints a token.
  */
 public final class InteropPeer {
     // ------------------------------------------------------------------ the scripted session's constants
@@ -101,13 +108,23 @@ public final class InteropPeer {
 
     private final Role role;
     private final String label;
+    /** The endpoint file (revision 6), or null. */
+    private final Path endpoint;
+    /** Host: expect the guest to be refused. Guest: send a wrong token. Needs {@link #endpoint}. */
+    private final boolean wrongToken;
     private final String peerGamePrefix;
+    private String mode() {
+        return endpoint == null ? "plain" : wrongToken ? "wrong-token" : "token";
+    }
+
     private final long startNs = System.nanoTime();
     private Link link;
 
     // what the events said
     private LinkEvent.PeerInfo peer;
     private String lostReason;
+    private boolean connected;
+    private final List<String> handshakeFailed = new ArrayList<>();
     private final List<Long> spawns = new ArrayList<>();
     private final List<Long> despawns = new ArrayList<>();
     private final List<String> focus = new ArrayList<>();
@@ -121,9 +138,11 @@ public final class InteropPeer {
     private final List<String> failures = new ArrayList<>();
     private int camerasOk, posesOk, collisionTriangles, framesOk, framesBad;
 
-    private InteropPeer(Role role, String label) {
+    private InteropPeer(Role role, String label, Path endpoint, boolean wrongToken) {
         this.role = role;
         this.label = label;
+        this.endpoint = endpoint;
+        this.wrongToken = wrongToken;
         this.peerGamePrefix = role == Role.HOST ? "interop guest (" : "interop host (";
     }
 
@@ -149,10 +168,13 @@ public final class InteropPeer {
         for (LinkEvent e : link.poll()) {
             if (e instanceof LinkEvent.Connected) {
                 peer = ((LinkEvent.Connected) e).peer();
+                connected = true;
             } else if (e instanceof LinkEvent.Lost) {
                 lostReason = ((LinkEvent.Lost) e).reason();
             } else if (e instanceof LinkEvent.HandshakeFailed) {
-                throw new Abort("handshake failed: " + ((LinkEvent.HandshakeFailed) e).reason());
+                String reason = ((LinkEvent.HandshakeFailed) e).reason();
+                handshakeFailed.add(reason);
+                if (!wrongToken) throw new Abort("handshake failed: " + reason);
             } else if (e instanceof LinkEvent.Spawn) {
                 spawns.add(((LinkEvent.Spawn) e).spawn().entity());
             } else if (e instanceof LinkEvent.Despawn) {
@@ -400,6 +422,30 @@ public final class InteropPeer {
         return at > 0 ? name.substring(0, at) : name;
     }
 
+    // ------------------------------------------------------------------ wrong token
+
+    /**
+     * The wrong-token mode (README, "Modes"): both sides wait for a {@code HandshakeFailed} whose reason contains
+     * "unauthorized" and check that no {@code Connected} comes. The host polls 300 ms more first; the guest closes at once,
+     * before its library would reconnect.
+     */
+    private void runRefused() throws Abort {
+        waitFor("a failed handshake", () -> !handshakeFailed.isEmpty());
+        check(handshakeFailed.get(0).contains("unauthorized"), "the handshake failed with \"" + handshakeFailed.get(0) + "\", expected unauthorized");
+        check(!connected, "a Connected event came");
+        if (role == Role.HOST) {
+            sleepPolling(300);
+            check(!connected, "a Connected event came after the refusal");
+        }
+        log("refused: " + handshakeFailed);
+    }
+
+    /** The token the wrong-token guest sends: the file's with its last character replaced (0 by 1, anything else by 0). */
+    static String withLastReplaced(String token) {
+        char last = token.charAt(token.length() - 1);
+        return token.substring(0, token.length() - 1) + (last == '0' ? '1' : '0');
+    }
+
     // ------------------------------------------------------------------ result
 
     private static String list(List<?> items, boolean quote) {
@@ -429,6 +475,9 @@ public final class InteropPeer {
         b.append(",\"frames_bad\":").append(framesBad);
         b.append(",\"focus\":").append(list(focus, true));
         b.append(",\"lost_reason\":").append(lostReason == null ? "null" : Json.quote(lostReason));
+        b.append(",\"mode\":").append(Json.quote(mode()));
+        b.append(",\"connected\":").append(connected);
+        b.append(",\"handshake_failed\":").append(list(handshakeFailed, true));
         b.append(",\"stats\":null");
         return b.append('}').toString();
     }
@@ -441,9 +490,28 @@ public final class InteropPeer {
         cfg.timeoutMs = 3000;
         cfg.reconnectMs = 200;
         try {
+            if (endpoint != null && !(role == Role.GUEST && wrongToken)) {
+                cfg.endpointFile = endpoint; // the host's library writes it, the guest's reads it before each attempt
+            }
+            if (endpoint != null && role == Role.GUEST && wrongToken) {
+                // Read the file with the library's reader, but give the library no file: connect with a token that is not the host's.
+                Endpoint ep = null;
+                long end = System.nanoTime() + STEP_TIMEOUT_MS * 1_000_000L;
+                while (ep == null) {
+                    try {
+                        ep = Endpoint.read(endpoint);
+                    } catch (IOException e) {
+                        if (System.nanoTime() >= end) throw new Abort("cannot read the endpoint file: " + e.getMessage());
+                        Thread.sleep(20);
+                    }
+                }
+                cfg.controlPort = ep.controlPort();
+                cfg.token = withLastReplaced(ep.token());
+            }
             link = role == Role.HOST ? Link.host(cfg) : Link.guest(cfg);
-            log("started, control port " + port + ", udp port " + link.udpPort());
-            if (role == Role.HOST) runHost();
+            log("started, control port " + (role == Role.HOST ? link.controlPort() : port) + ", udp port " + link.udpPort());
+            if (wrongToken) runRefused();
+            else if (role == Role.HOST) runHost();
             else runGuest();
         } catch (Abort a) {
             fail(a.getMessage());
@@ -462,6 +530,8 @@ public final class InteropPeer {
         Role role = null;
         int port = -1;
         String label = null;
+        Path endpoint = null;
+        boolean wrongToken = false;
         if (args.length >= 1) role = Role.parse(args[0]);
         for (int i = 1; role != null && i < args.length; i++) {
             if (args[i].equals("--port") && i + 1 < args.length) {
@@ -472,15 +542,19 @@ public final class InteropPeer {
                 }
             } else if (args[i].equals("--label") && i + 1 < args.length) {
                 label = args[++i];
+            } else if (args[i].equals("--endpoint") && i + 1 < args.length) {
+                endpoint = Paths.get(args[++i]);
+            } else if (args[i].equals(role == Role.HOST ? "--expect-unauthorized" : "--wrong-token")) {
+                wrongToken = true;
             } else {
                 role = null;
             }
         }
-        if (role == null || port < 1 || port > 65535 || label == null) {
-            System.err.println("usage: InteropPeer host|guest --port PORT --label LABEL");
+        if (role == null || port < (endpoint != null ? 0 : 1) || port > 65535 || label == null || (wrongToken && endpoint == null)) {
+            System.err.println("usage: InteropPeer host|guest --port PORT --label LABEL [--endpoint FILE [--expect-unauthorized | --wrong-token]]");
             System.exit(2);
             return;
         }
-        System.exit(new InteropPeer(role, label).run(port));
+        System.exit(new InteropPeer(role, label, endpoint, wrongToken).run(port));
     }
 }

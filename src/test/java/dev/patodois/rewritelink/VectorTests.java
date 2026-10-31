@@ -62,7 +62,7 @@ final class VectorTests {
      * rewrite-bridge (it copies the directory and prints {@code VECTORS_DIGEST = ...}) and paste the printed digest
      * here.
      */
-    static final String VECTORS_DIGEST = "815d4f09e6d15f17dfcfedcf96865c5cfd60e170d3f71fb97f3adc0edc200fd9";
+    static final String VECTORS_DIGEST = "1d64e93423f3be8b152260ad93c11f0c5459fa942be6912f3aeda13b3e66649f";
 
     /** Vectors this implementation fails, id to reason. Empty when it passes them all. */
     static final Map<String, String> KNOWN_DISAGREEMENTS = new LinkedHashMap<>();
@@ -99,6 +99,7 @@ final class VectorTests {
         LinkTests.test("vectors: pixelfiles.json (readers)", () -> pixelReaderVectors());
         LinkTests.test("vectors: pixelfiles.json (writers)", () -> pixelWriterVectors());
         LinkTests.test("vectors: sessions.json", () -> sessionVectors());
+        LinkTests.test("vectors: endpoints.json", () -> endpointVectors());
         LinkTests.test("vectors: KNOWN_DISAGREEMENTS names existing vectors", () -> {
             List<String> missing = new ArrayList<>();
             for (String id : KNOWN_DISAGREEMENTS.keySet()) {
@@ -349,7 +350,8 @@ final class VectorTests {
             case "hello":
                 return new Control.Hello(roleOf(m.get("role")), str(m.get("game")), (int) num(m.get("protocol")),
                         (int) num(m.get("min_protocol")), (int) num(m.get("udp_port")), num(m.get("heartbeat_ms")),
-                        num(m.get("timeout_ms")), m.containsKey("session") ? Long.valueOf(num(m.get("session"))) : null);
+                        num(m.get("timeout_ms")), m.containsKey("session") ? Long.valueOf(num(m.get("session"))) : null,
+                        optStr(m, "token"));
             case "spawn":
                 return new Control.Spawn(num(m.get("entity")), str(m.get("provider")), str(m.get("asset")), optStr(m, "name"));
             case "despawn":
@@ -1080,6 +1082,7 @@ final class VectorTests {
             lc.heartbeatMs = cfg.containsKey("heartbeat_ms") ? num(cfg.get("heartbeat_ms")) : 250;
             lc.timeoutMs = cfg.containsKey("timeout_ms") ? num(cfg.get("timeout_ms")) : 2000;
             lc.reconnectMs = cfg.containsKey("reconnect_ms") ? num(cfg.get("reconnect_ms")) : 200;
+            lc.token = optStr(cfg, "token");
             if (host) {
                 listener = null;
                 lc.controlPort = 0;
@@ -1492,6 +1495,82 @@ final class VectorTests {
                 throw new Mismatch("the UT refused " + what + ": " + e.getMessage());
             }
         }
+    }
+
+    // ---------------------------------------------------------------------------------------------
+    // endpoints.json (revision 6)
+
+    /** The token every endpoint vector uses: its error text must never contain it. */
+    private static final String VECTOR_TOKEN = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+
+    static void checkEndpoint(Map<String, Object> c, Path tmp) throws Exception {
+        Path file = tmp.resolve("endpoint.json");
+        Object kind = c.get("path_kind");
+        boolean posix = java.nio.file.FileSystems.getDefault().supportedFileAttributeViews().contains("posix");
+        if (kind == null) {
+            byte[] bytes = c.get("text") != null ? str(c.get("text")).getBytes(StandardCharsets.UTF_8) : unhex(str(c.get("text_hex")));
+            Files.write(file, bytes);
+            if (posix) {
+                Files.setPosixFilePermissions(file, java.nio.file.attribute.PosixFilePermissions.fromString(
+                        modeString(c.get("mode") == null ? "0600" : str(c.get("mode")))));
+            }
+        } else if ("directory".equals(kind)) {
+            Files.createDirectory(file);
+        } else if ("fifo".equals(kind)) {
+            if (!makeFifo(file)) throw new SkipCase("cannot create a FIFO here");
+        } else if (!"missing".equals(kind)) {
+            throw new IllegalArgumentException("path_kind " + kind);
+        }
+        Endpoint got = null;
+        IOException err = null;
+        try {
+            got = Endpoint.read(file);
+        } catch (IOException e) {
+            err = e;
+        }
+        if ("ok".equals(str(c.get("expect")))) {
+            if (got == null) throw new Mismatch("refused: " + err);
+            if (got.controlPort() != (int) num(c.get("control_port")) || !got.token().equals(str(c.get("token")))) {
+                throw new Mismatch("gave port " + got.controlPort() + " and another token than expected");
+            }
+        } else {
+            if (got != null) throw new Mismatch("accepted the file (port " + got.controlPort() + ")");
+            for (Throwable t = err; t != null; t = t.getCause()) {
+                String m = String.valueOf(t.getMessage());
+                if (m.contains(VECTOR_TOKEN) || m.contains("0123456789abcdef")) throw new Mismatch("the error text contains the token: " + m);
+            }
+        }
+    }
+
+    /** "0644" to "rw-r--r--". */
+    static String modeString(String octal) {
+        int m = Integer.parseInt(octal, 8);
+        StringBuilder b = new StringBuilder();
+        for (int shift = 6; shift >= 0; shift -= 3) {
+            b.append((m >> shift & 4) != 0 ? 'r' : '-').append((m >> shift & 2) != 0 ? 'w' : '-').append((m >> shift & 1) != 0 ? 'x' : '-');
+        }
+        return b.toString();
+    }
+
+    static void endpointVectors() throws Exception {
+        Report r = new Report();
+        for (Map<String, Object> c : load("endpoints.json")) {
+            r.record(c, () -> {
+                Object skip = c.get("skip_on");
+                if (skip != null && windows() && arr(skip).contains("windows")) throw new SkipCase("not on Windows");
+                Path tmp = Files.createTempDirectory("rbl-endpoint-vector");
+                try {
+                    checkEndpoint(c, tmp);
+                } finally {
+                    try (Stream<Path> walk = Files.walk(tmp)) {
+                        for (Path p : walk.sorted(Collections.reverseOrder()).collect(Collectors.toList())) {
+                            Files.deleteIfExists(p);
+                        }
+                    }
+                }
+            });
+        }
+        r.finish("endpoints.json");
     }
 
     static void sessionVectors() throws Exception {

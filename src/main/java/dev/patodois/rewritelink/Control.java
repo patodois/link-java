@@ -29,7 +29,10 @@ public interface Control {
         }
     }
 
-    /** {@code session} is null in a guest hello and a nonzero u32 (in a long) in a host hello. */
+    /**
+     * {@code session} is null in a guest hello and a nonzero u32 (in a long) in a host hello. {@code token} (revision 6,
+     * CONTRACT.md 6.2) is null unless a guest has a token to send; it is never shown by {@link #toString()}.
+     */
     final class Hello implements Control {
         private final Role role;
         private final String game;
@@ -39,8 +42,14 @@ public interface Control {
         private final long heartbeatMs;
         private final long timeoutMs;
         private final Long session;
+        private final String token;
 
         public Hello(Role role, String game, int protocol, int minProtocol, int udpPort, long heartbeatMs, long timeoutMs, Long session) {
+            this(role, game, protocol, minProtocol, udpPort, heartbeatMs, timeoutMs, session, null);
+        }
+
+        public Hello(Role role, String game, int protocol, int minProtocol, int udpPort, long heartbeatMs, long timeoutMs, Long session,
+                String token) {
             this.role = role;
             this.game = game;
             this.protocol = protocol;
@@ -49,6 +58,7 @@ public interface Control {
             this.heartbeatMs = heartbeatMs;
             this.timeoutMs = timeoutMs;
             this.session = session;
+            this.token = token;
         }
 
         public Role role() {
@@ -83,6 +93,11 @@ public interface Control {
             return session;
         }
 
+        /** The token a guest sends, or null. Of any length: the parser accepts any string, the host checks the range. */
+        public String token() {
+            return token;
+        }
+
         @Override
         public boolean equals(Object o) {
             if (this == o) return true;
@@ -95,7 +110,8 @@ public interface Control {
                     && udpPort == that.udpPort
                     && heartbeatMs == that.heartbeatMs
                     && timeoutMs == that.timeoutMs
-                    && java.util.Objects.equals(session, that.session);
+                    && java.util.Objects.equals(session, that.session)
+                    && java.util.Objects.equals(token, that.token);
         }
 
         @Override
@@ -109,12 +125,14 @@ public interface Control {
             h = 31 * h + Long.hashCode(heartbeatMs);
             h = 31 * h + Long.hashCode(timeoutMs);
             h = 31 * h + java.util.Objects.hashCode(session);
+            h = 31 * h + java.util.Objects.hashCode(token);
             return h;
         }
 
         @Override
         public String toString() {
-            return "Hello[role=" + role + ", game=" + game + ", protocol=" + protocol + ", minProtocol=" + minProtocol + ", udpPort=" + udpPort + ", heartbeatMs=" + heartbeatMs + ", timeoutMs=" + timeoutMs + ", session=" + session + "]";
+            return "Hello[role=" + role + ", game=" + game + ", protocol=" + protocol + ", minProtocol=" + minProtocol + ", udpPort=" + udpPort + ", heartbeatMs=" + heartbeatMs + ", timeoutMs=" + timeoutMs + ", session=" + session
+                    + (token == null ? "" : ", token=<redacted>") + "]";
         }
     }
 
@@ -383,6 +401,7 @@ public interface Control {
                     .append(",\"heartbeat_ms\":").append(h.heartbeatMs())
                     .append(",\"timeout_ms\":").append(h.timeoutMs());
             if (h.session() != null) b.append(",\"session\":").append(h.session());
+            if (h.token() != null) b.append(",\"token\":").append(Json.quote(ControlFields.clean(h.token())));
             b.append('}');
         } else if (this instanceof Spawn) {
             Spawn s = (Spawn) this;
@@ -441,7 +460,7 @@ public interface Control {
                         (int) ControlFields.bounded(o, "protocol", 0xFFFF), (int) ControlFields.bounded(o, "min_protocol", 0xFFFF),
                         (int) ControlFields.bounded(o, "udp_port", 0xFFFF),
                         ControlFields.bounded(o, "heartbeat_ms", 0xFFFFFFFFL), ControlFields.bounded(o, "timeout_ms", 0xFFFFFFFFL),
-                        ControlFields.optBounded(o, "session", 0xFFFFFFFFL));
+                        ControlFields.optBounded(o, "session", 0xFFFFFFFFL), ControlFields.optStr(o, "token"));
             }
             case "spawn":
                 return new Spawn(ControlFields.bounded(o, "entity", 0xFFFFFFFFL), ControlFields.str(o, "provider"),

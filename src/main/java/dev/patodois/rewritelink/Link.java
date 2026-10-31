@@ -11,6 +11,7 @@ import java.nio.channels.SocketChannel;
 import java.nio.charset.CharacterCodingException;
 import java.nio.charset.CodingErrorAction;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Path;
 import java.security.SecureRandom;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
@@ -55,6 +56,15 @@ public final class Link implements AutoCloseable {
     private final ServerSocketChannel listener; // host only
     private final DatagramChannel udp;
     private final SecureRandom random = new SecureRandom();
+    /**
+     * Host: the token a guest must send, as UTF-8 bytes (null = accept any guest). Guest: the configured token, which
+     * an endpoint file overrides for each attempt. Never printed, never put into an event or a bye.
+     */
+    private final String token;
+    private final byte[] tokenBytes;
+    private final Path endpointFile;
+    /** Host: whether this link wrote {@link #endpointFile} and has not removed it yet. */
+    private boolean endpointWritten;
 
     private Conn conn;
     private final List<Closing> closing = new ArrayList<>();
@@ -109,10 +119,17 @@ public final class Link implements AutoCloseable {
     private static final class Connecting implements Conn {
         private final SocketChannel ch;
         private final long since;
+        /** The token this attempt sends (from the endpoint file, if there is one), or null. */
+        private final String token;
 
-        Connecting(SocketChannel ch, long since) {
+        Connecting(SocketChannel ch, long since, String token) {
             this.ch = ch;
             this.since = since;
+            this.token = token;
+        }
+
+        String token() {
+            return token;
         }
 
         public SocketChannel ch() {
@@ -356,6 +373,11 @@ public final class Link implements AutoCloseable {
         this.role = role;
         this.cfg = cfg;
         this.heartbeatMs = Math.max(Wire.MIN_HEARTBEAT_MS, Math.min(Wire.MAX_HEARTBEAT_MS, cfg.heartbeatMs));
+        if (cfg.token != null) Tokens.requireUsable(cfg.token);
+        // A host with an endpoint file but no token makes its own, 64 hex digits, new each time it starts.
+        this.token = cfg.token != null ? cfg.token : (role == Role.HOST && cfg.endpointFile != null ? Tokens.generate() : null);
+        this.tokenBytes = token == null ? null : token.getBytes(StandardCharsets.UTF_8);
+        this.endpointFile = cfg.endpointFile;
         long now = now();
         ServerSocketChannel l = null;
         DatagramChannel u = null;
@@ -374,7 +396,12 @@ public final class Link implements AutoCloseable {
                 l.bind(new InetSocketAddress(LOOPBACK, cfg.controlPort));
                 l.configureBlocking(false);
             }
-        } catch (IOException e) {
+            if (role == Role.HOST && endpointFile != null) {
+                // Only after the bind: a host that lost the port to someone else writes nothing (CONTRACT.md 6.2).
+                Endpoint.write(endpointFile, ((InetSocketAddress) l.getLocalAddress()).getPort(), token);
+                endpointWritten = true;
+            }
+        } catch (IOException | RuntimeException e) {
             if (u != null) u.close();
             if (l != null) l.close();
             throw e;
@@ -451,9 +478,10 @@ public final class Link implements AutoCloseable {
         return out;
     }
 
-    private Control.Hello hello(int protocol, Long session) {
+    /** Only a guest's hello carries a token (CONTRACT.md 6.2). */
+    private Control.Hello hello(int protocol, Long session, String guestToken) {
         return new Control.Hello(role, cfg.game, protocol, Wire.MIN_PROTOCOL_VERSION, udpPort(),
-                heartbeatMs, cfg.timeoutMs, session);
+                heartbeatMs, cfg.timeoutMs, session, role == Role.GUEST ? guestToken : null);
     }
 
     private void pollConnect(long now) {
@@ -485,11 +513,25 @@ public final class Link implements AutoCloseable {
             return;
         }
         if (conn instanceof Idle && now >= ((Idle) conn).nextTry()) {
+            int port = cfg.controlPort;
+            String attemptToken = token;
+            if (endpointFile != null) {
+                // Read before every attempt: the host may have restarted with another port and token. No file, or a
+                // refused one: no attempt this time, no event, try again after the reconnect delay.
+                try {
+                    Endpoint ep = Endpoint.read(endpointFile);
+                    port = ep.controlPort();
+                    attemptToken = ep.token();
+                } catch (IOException | RuntimeException e) {
+                    conn = new Idle(now + cfg.reconnectMs);
+                    return;
+                }
+            }
             try {
                 SocketChannel ch = SocketChannel.open();
                 ch.configureBlocking(false);
-                ch.connect(new InetSocketAddress(LOOPBACK, cfg.controlPort));
-                conn = new Connecting(ch, now);
+                ch.connect(new InetSocketAddress(LOOPBACK, port));
+                conn = new Connecting(ch, now, attemptToken);
             } catch (IOException e) {
                 conn = new Idle(now + cfg.reconnectMs);
             }
@@ -498,7 +540,7 @@ public final class Link implements AutoCloseable {
             try {
                 if (c.ch().finishConnect()) {
                     Ctl ctl = new Ctl(c.ch());
-                    ctl.queue(hello(Wire.PROTOCOL_VERSION, null));
+                    ctl.queue(hello(Wire.PROTOCOL_VERSION, null, c.token()));
                     linesSent++;
                     ctl.flush();
                     conn = new Handshake(ctl, now);
@@ -609,6 +651,12 @@ public final class Link implements AutoCloseable {
     }
 
     private String[] onHello(Control.Hello h, long now) {
+        // A host with a token checks it first, before any other check, in constant time. The answer is the fixed word
+        // and nothing about which check failed; neither token is ever put into it.
+        if (role == Role.HOST && tokenBytes != null
+                && (h.token() == null || !Tokens.equal(h.token().getBytes(StandardCharsets.UTF_8), tokenBytes))) {
+            return new String[] {"unauthorized", "bye"};
+        }
         Role expected = role.other();
         if (h.role() != expected) return new String[] {"peer claims role " + h.role().wire, "bye"};
         if (h.udpPort() == 0) return new String[] {"peer announced udp_port 0", "bye"};
@@ -645,7 +693,7 @@ public final class Link implements AutoCloseable {
                 new InetSocketAddress(LOOPBACK, h.udpPort()), h.heartbeatMs(), timeoutMs);
         Ctl ctl = ((Handshake) conn).ctl();
         if (role == Role.HOST) {
-            ctl.queue(hello(protocol, session));
+            ctl.queue(hello(protocol, session, null));
             linesSent++;
             ctl.flush();
         }
@@ -963,6 +1011,10 @@ public final class Link implements AutoCloseable {
             if (listener != null) listener.close();
         } catch (IOException ignored) {
             // nothing to do
+        }
+        if (endpointWritten) {
+            endpointWritten = false;
+            Endpoint.delete(endpointFile);
         }
     }
 }

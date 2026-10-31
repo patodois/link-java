@@ -3,7 +3,7 @@
 A pure-Java implementation of the **rewrite-bridge passthrough link protocol v1**, so that a game
 with a Java runtime (a Minecraft mod, a Hytale plugin, a Java server) can be a **host** or a
 **guest** next to any other game or rewrite that speaks it. The protocol is defined by
-`docs/CONTRACT.md` in the `rewrite-bridge` repository (revision 5); this library is one
+`docs/CONTRACT.md` in the `rewrite-bridge` repository (revision 6); this library is one
 implementation of it, tested against the Rust reference peers (`fake_host`, `fake_guest`), which come with
 the [`rewrite-bridge`](https://crates.io/crates/rewrite-bridge) crate:
 `cargo install rewrite-bridge --version 0.2.3 --features link --examples`.
@@ -26,6 +26,7 @@ the [`rewrite-bridge`](https://crates.io/crates/rewrite-bridge) crate:
 | `Wire` | Binary datagrams (header, Heartbeat, Camera, Pose, Collision, Frame): encode, decode, chunking |
 | `Control` | TCP JSON-line messages (`hello`, `spawn`, `despawn`, `input`, `frame_channel`, `bye`) |
 | `Json` | A small strict JSON reader/writer for the control lines |
+| `Tokens`, `Endpoint` | The optional authentication token and the endpoint file (contract revision 6, below) |
 | `Link` | One side of a session: handshake, version negotiation, heartbeats, the monotonic watchdog, stale/duplicate/foreign datagram rules, bye + half-close + drain (CONTRACT 6.1) without blocking |
 | `LinkRunner` | A daemon thread that polls a `Link` and hands events to a listener |
 | `LinkEvent`, `LinkConfig` | What `poll()` reports, and the settings |
@@ -47,6 +48,54 @@ order and HotSpot compiles to a real barrier that the JIT also respects for the 
 long comment at the top of `PixelFile.java` has the details, and `PixelFileTests` runs a writer thread
 against a reader thread (two slots, so the writer keeps lapping the reader) to check that a torn copy is
 never accepted.
+
+## Authentication: the token and the endpoint file (contract revision 6, version 0.2.0)
+
+Authentication is optional and the host decides it. A host with no token accepts any guest, exactly as before; a
+guest with no token sends none. Two new settings in `LinkConfig`, both `null` by default:
+
+- `token` (`String`): on a host, the token a guest's `hello` must carry; on a guest, the token it sends. It has 1 to
+  256 bytes of UTF-8 (bytes, not characters) and no U+0000; otherwise `Link.host` / `Link.guest` throw
+  `IllegalArgumentException`.
+- `endpointFile` (`java.nio.file.Path`): a host writes `{"control_port":N,"token":"..."}` there once it has bound its
+  control port (with the port it really got; with `token == null` it first makes one) and removes the file when it
+  closes; if the file cannot be written, `Link.host` throws `IOException` and the port is released. A guest reads
+  the file before every connection attempt, the first and each reconnect, and uses its port and token; if the read
+  fails it makes no attempt that time and tries again after `reconnectMs`.
+
+```java
+// Host: the library makes a token (64 hex digits) and writes it, with the bound port, to a file only this user can read
+LinkConfig h = new LinkConfig("My Game");
+h.endpointFile = Paths.get(System.getProperty("user.home"), ".cache", "rewrite-link", "my-game.json");
+// Guest: the same path, nothing else to configure
+LinkConfig g = new LinkConfig("My Rewrite");
+g.endpointFile = h.endpointFile;
+```
+
+A host with a token checks the guest's `token` before every other check of the handshake, in constant time, and
+refuses a missing, out-of-range or unequal one with `{"type":"bye","reason":"unauthorized"}` (the `HandshakeFailed`
+event reason is exactly `unauthorized`; the guest's is `peer said bye: unauthorized`). A host without a token, and a
+guest, parse a `token` they receive and ignore it. No token appears in a `bye`, an event, an exception message or a
+`toString()` (`LinkConfig`, `Control.Hello` and `Endpoint` print `<redacted>`).
+
+Public helpers: `Tokens.generate()` (32 bytes from `SecureRandom`, 64 lowercase hex digits), `Tokens.equal(byte[], byte[])`
+(the contract's constant-time method), and `Endpoint.write(path, port, token)`, `Endpoint.read(path)`,
+`Endpoint.delete(path)`. `write` makes a temporary file in the same directory, exclusively and with mode `rw-------` from
+creation where the file system has POSIX permissions, then renames it over `path` atomically; it does not create
+directories. `read` follows symbolic links, refuses anything that is not a regular file (checked before opening, so a FIFO
+cannot block it), refuses on POSIX a file with group or other permissions, refuses more than 4096 bytes, and parses the
+file with the strict control-line parser; its errors never quote the file. Where the default file system has no POSIX
+view (Windows) the permission check is skipped; the directory's ACL is what keeps other users out (that code path has
+not been run on Windows). `Link.close()` removes the file the link wrote; a JVM that dies leaves it behind (the token dies
+with it, the next host makes a new one).
+
+What the token protects, in two sentences: it keeps out other users of the machine and any process that cannot read the
+endpoint file, and it defeats a process that takes the control port before the host starts (the host's bind fails, so no
+file is written and the guest never hands its token to the squatter). It does not protect against a process running as the
+same user, against root, or against anyone reading the clear-text loopback traffic; see section 6.2 of the contract.
+
+A `hello` whose `token` is not a string is a protocol error even when the receiver has no token; with a duplicated
+`token` key the last one wins, as for every field.
 
 ## Contract revisions 4 and 5
 
@@ -108,7 +157,7 @@ No account and no release upload is needed: [JitPack](https://jitpack.io) builds
 request and serves it as a Maven artifact (`jitpack.yml` asks it for JDK 21, which Gradle 9 needs). The coordinates are
 
 ```
-com.github.patodois:link-java:<tag>        e.g. com.github.patodois:link-java:v0.1.3
+com.github.patodois:link-java:<tag>        e.g. com.github.patodois:link-java:v0.2.0
 ```
 
 where `<tag>` is a tag of this repository (see the [releases and tags](https://github.com/patodois/link-java/tags)); `main-SNAPSHOT`
@@ -122,7 +171,7 @@ repositories {
     maven { url 'https://jitpack.io' }
 }
 dependencies {
-    implementation 'com.github.patodois:link-java:v0.1.3'
+    implementation 'com.github.patodois:link-java:v0.2.0'
 }
 ```
 
@@ -134,7 +183,7 @@ repositories {
     maven("https://jitpack.io")
 }
 dependencies {
-    implementation("com.github.patodois:link-java:v0.1.3")
+    implementation("com.github.patodois:link-java:v0.2.0")
 }
 ```
 
@@ -151,7 +200,7 @@ Maven:
 <dependency>
   <groupId>com.github.patodois</groupId>
   <artifactId>link-java</artifactId>
-  <version>v0.1.3</version>
+  <version>v0.2.0</version>
 </dependency>
 ```
 
@@ -207,7 +256,9 @@ example byte for byte, check every layout offset and length, reject malformed in
 20,000-case fuzz), and run live sessions in one process (handshake, state flow, stale drops,
 `busy`, bad hello, watchdog, clean bye with half-close, foreign addresses), then `ReviewTests` (one
 regression test per finding of the revision 4 review, and the revision 5 rules) and `PixelFileTests`
-(layout, depth plane, refusals, and the writer-against-reader contention test). They are compiled
+(layout, depth plane, refusals, and the writer-against-reader contention test), then `TokenTests` (revision 6: the
+constant-time comparison, token generation, the endpoint file, live links with a token and an endpoint file, and
+secrecy). They are compiled
 for Java 8 too and can run on a Java 8 runtime:
 
 ```sh
@@ -247,6 +298,9 @@ java -cp build/classes/java/main:build/classes/java/test dev.patodois.rewritelin
 
 It prints log lines and, as its last line, `RBL-INTEROP-RESULT {json}`; the exit status is 0 when every check
 passed, 1 when one failed and 2 for a bad command line. This library has no counters, so `stats` is `null`.
+With `--endpoint FILE` (host: `--port 0`) the host's library generates a token and writes the file, and the guest's
+library reads it; `--expect-unauthorized` (host) and `--wrong-token` (guest) run the refusal scenario. The result line has
+the keys `mode`, `connected` and `handshake_failed`, and the peer never prints a token.
 
 Consumers either depend on the jar or compile `src/main/java` together with their own sources
 (`hytale-link` does the latter, `minecraft-link` includes this project as a Gradle composite build
