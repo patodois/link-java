@@ -120,7 +120,7 @@ Synthetic inputs only; no game files or data.
   (which quote the contract), the README and `tests/vectors`. I did not compare with the Rust side.
 * The `maxDuration` of the targets is a constant of the annotation (`30m`), so `-Pfuzz` runs all 12 targets one after the other (6 hours); I found no
   documented property to shorten it. `fuzz/README.md` shows how to run one target in its own JVM.
-* The repository has no formatter or linter other than `javac -Xlint:all` in the build; I ran what CI runs: `./gradlew check` (the tests twice) and `tools/check_public_tree.py`.
+* The repository has no formatter or linter other than `javac -Xlint:all` in the build; I ran what CI runs: `./gradlew check` (the tests twice, 75 passed, 0 failed) and `python3 tools/check_public_tree.py --range origin/main..HEAD` (passes). The gate refused the new `.java` files of `fuzz/` as foreign source, so `.public-tree.cfg` gained `allow_source fuzz/src/test/java/**` (the gate's own directive for source files that are ours); the script is unchanged.
 
 ## Uncertain
 
