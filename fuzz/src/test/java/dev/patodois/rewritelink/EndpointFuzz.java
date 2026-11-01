@@ -6,8 +6,6 @@ import java.nio.file.FileSystems;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.attribute.PosixFilePermissions;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
 
 import com.code_intelligence.jazzer.api.FuzzedDataProvider;
 import com.code_intelligence.jazzer.junit.FuzzTest;
@@ -19,7 +17,6 @@ import com.code_intelligence.jazzer.junit.FuzzTest;
  * never appear in a message.
  */
 class EndpointFuzz {
-    private static final Pattern TOKEN_VALUE = Pattern.compile("\"token\"\\s*:\\s*\"((?:[^\"\\\\]|\\\\.)*)\"");
     private static Path dir;
     private static Path file;
 
@@ -76,12 +73,26 @@ class EndpointFuzz {
         check(text.getBytes(StandardCharsets.UTF_8));
     }
 
+    /** The raw text between the quotes after the first {@code "token":} (a scan; a regular expression recurses per character). */
+    private static String tokenText(String text) {
+        int k = text.indexOf("\"token\"");
+        if (k < 0) return null;
+        int i = k + 7;
+        while (i < text.length() && (text.charAt(i) == ' ' || text.charAt(i) == '\t')) i++;
+        if (i >= text.length() || text.charAt(i) != ':') return null;
+        i++;
+        while (i < text.length() && (text.charAt(i) == ' ' || text.charAt(i) == '\t')) i++;
+        if (i >= text.length() || text.charAt(i) != '"') return null;
+        int start = ++i;
+        while (i < text.length() && text.charAt(i) != '"') i += text.charAt(i) == '\\' ? 2 : 1;
+        return i <= text.length() ? text.substring(start, Math.min(i, text.length())) : null;
+    }
+
     private static void check(byte[] content) throws Exception {
         put(content);
         final Endpoint[] got = new Endpoint[1];
         String secret = null;
-        Matcher m = TOKEN_VALUE.matcher(new String(content, StandardCharsets.ISO_8859_1));
-        if (m.find()) secret = m.group(1);
+        secret = tokenText(new String(content, StandardCharsets.ISO_8859_1));
         try {
             Guard.within("Endpoint.read", 1500, 32L << 20, () -> got[0] = Endpoint.read(file()));
         } catch (IOException e) {

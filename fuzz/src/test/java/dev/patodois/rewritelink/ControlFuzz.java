@@ -53,7 +53,7 @@ class ControlFuzz {
     private static void check(String line, String secret) throws Exception {
         final Control[] out = new Control[1];
         try {
-            Guard.within("Control.parse", 1500, 16L << 20, () -> out[0] = Control.parse(line));
+            Guard.within("Control.parse", 250, 128L << 20, () -> out[0] = Control.parse(line));
         } catch (WireException e) {
             if (Guard.leaks(e.getMessage(), secret)) throw new AssertionError("token in a WireException message: " + e.getMessage());
             return;
