@@ -249,7 +249,14 @@ export JAVA_HOME=/opt/homebrew/opt/openjdk@25     # any JDK 9+ to build (javac -
 ./gradlew demo --no-daemon --args="guest --port 47800 --orbit"
 ./gradlew demo --no-daemon --args="guest --port 47800 --frames"        # renders a disc with depth into a pixel file
 ./gradlew demo --no-daemon --args="host --port 47800 --big-collision 400"  # a 3.2 MB collision snapshot each second
+./gradlew demo --no-daemon --args="host --endpoint-file /run/user/1000/rewrite-link.json"   # contract revision 6: token required
+./gradlew demo --no-daemon --args="guest --endpoint-file /run/user/1000/rewrite-link.json"  # reads port and token from that file
 ```
+
+`--endpoint-file PATH` (host and guest) uses the optional token of contract revision 6 (`LinkConfig.endpointFile`): the host
+makes a token, requires it and writes `PATH` (`{"control_port","token"}`, mode 0600, removed on exit); the guest reads port and token
+from `PATH` before every connection attempt, so `--port` is ignored by it. A guest without the right token gets `bye unauthorized`
+(logged as `handshake failed`). Without the option nothing changes. Put the file in a directory only your user can reach.
 
 The tests are a plain runner (`LinkTests`, no JUnit): they encode and decode the contract's worked
 example byte for byte, check every layout offset and length, reject malformed input (plus a

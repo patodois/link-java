@@ -16,7 +16,13 @@ import dev.patodois.rewritelink.Control.Role;
  * <pre>
  *   java -cp build/classes/java/main dev.patodois.rewritelink.LinkDemo guest [--port 47800] [--seconds 6] [--frames]
  *   java -cp build/classes/java/main dev.patodois.rewritelink.LinkDemo host  [--port 47800] [--seconds 6] [--big-collision 400]
+ *   ... LinkDemo host|guest --endpoint-file PATH   (contract revision 6, CONTRACT.md 6.2)
  * </pre>
+ *
+ * <p>{@code --endpoint-file PATH}: the host requires a token (the library generates one) and writes {@code PATH}
+ * with the control port it bound and the token, mode 0600 where POSIX permissions exist; the guest reads port and token from
+ * {@code PATH} before every connection attempt and makes none while it cannot read it. {@code --port} is then ignored
+ * by the guest; the host still binds {@code --port} (0 = any free port).
  *
  * <p>{@code guest --frames} renders a disc with linear depth into a 320x240 pixel file and announces it
  * for every camera it gets; the host reads such frames and reports what is in them. {@code host
@@ -45,7 +51,7 @@ public final class LinkDemo {
 
     public static void main(String[] args) throws Exception {
         if (args.length < 1 || !(args[0].equals("host") || args[0].equals("guest"))) {
-            System.err.println("usage: LinkDemo host|guest [--port N] [--seconds S]");
+            System.err.println("usage: LinkDemo host|guest [--port N] [--seconds S] [--endpoint-file PATH] [--orbit] [--frames] [--big-collision N]");
             System.exit(2);
         }
         boolean host = args[0].equals("host");
@@ -57,9 +63,12 @@ public final class LinkDemo {
         start = System.nanoTime();
         LinkConfig cfg = new LinkConfig(host ? "Java Host" : "Java Guest");
         cfg.controlPort = port;
+        String endpointFile = arg(args, "--endpoint-file", null);
+        if (endpointFile != null) cfg.endpointFile = Paths.get(endpointFile);
         String name = host ? "host" : "guest";
         try (Link link = host ? Link.host(cfg) : Link.guest(cfg)) {
             if (host) log(name, "listening on 127.0.0.1:" + link.controlPort());
+            else if (endpointFile != null) log(name, "connecting to the host named by endpoint file " + endpointFile);
             else log(name, "connecting to 127.0.0.1:" + port);
             if (host) runHost(link, seconds);
             else runGuest(link, seconds);

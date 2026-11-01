@@ -761,6 +761,7 @@ public final class LinkTests {
         ReviewTests.run(args);
         PixelFileTests.run();
         TokenTests.run();
+        DemoTests.run();
         VectorTests.run();
 
         System.out.println();
