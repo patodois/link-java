@@ -437,7 +437,11 @@ public interface Control {
      * known type with a missing or out-of-range field is a {@link WireException}.
      */
     static Control parse(String line) throws WireException {
-        while (line.endsWith("\n") || line.endsWith("\r")) line = line.substring(0, line.length() - 1);
+        // One pass: dropping the line endings one character at a time copied the line each time, quadratic in the number
+        // of trailing CR/LF characters (a 65 KiB line of CRs took seconds).
+        int end = line.length();
+        while (end > 0 && (line.charAt(end - 1) == '\n' || line.charAt(end - 1) == '\r')) end--;
+        if (end < line.length()) line = line.substring(0, end);
         if (line.length() >= Wire.MAX_LINE) throw new WireException("bad control line: line too long");
         Object v;
         try {

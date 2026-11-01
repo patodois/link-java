@@ -1,0 +1,4 @@
+// A build of its own, not part of the library's build: `./gradlew check`, the published jar, JitPack and CI never
+// see it. It pulls the library in through a composite build, so the fuzz targets run against the current sources.
+rootProject.name = 'link-java-fuzz'
+includeBuild('..')
