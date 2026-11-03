@@ -5,7 +5,7 @@ import static dev.patodois.rewritelink.LinkTests.eq;
 import static dev.patodois.rewritelink.LinkTests.test;
 
 /**
- * Regression tests for what the Jazzer targets in {@code fuzz/} found (see CLOUD-REPORT.md). Each one fails on the code
+ * Regression tests for what the Jazzer targets in {@code fuzz/} found. Each one fails on the code
  * the fuzzing was run against and passes on the fix.
  */
 final class FuzzFindingTests {
