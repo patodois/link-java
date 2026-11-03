@@ -19,10 +19,13 @@ final class FuzzFindingTests {
 
     static void run() {
         test("fuzz: Control.parse strips a long run of trailing CR and LF in linear time", () -> {
-            // A line of 65000 CR characters cost 0.3 to 3.5 seconds: each one was removed by copying the whole line. The
-            // fixed code takes well under a millisecond; the best of three runs must stay under 100 ms.
+            // A line of 65000 CR characters cost 0.3 to 3.5 seconds: each one was removed by copying the whole line. On a
+            // fast machine that run still fits in 100 ms, so the test uses four times the longest line the socket reader
+            // passes on (Wire.MAX_LINE): the old code copies sixteen times as much and takes well over a second, the fixed
+            // code well under a millisecond. The best of three runs must stay under 100 ms.
+            int run = 4 * Wire.MAX_LINE;
             for (char c : new char[] {'\r', '\n'}) {
-                String line = "{\"type\":\"bye\",\"reason\":\"x\"}" + repeat(c, Wire.MAX_LINE - 100);
+                String line = "{\"type\":\"bye\",\"reason\":\"x\"}" + repeat(c, run);
                 long best = Long.MAX_VALUE;
                 for (int i = 0; i < 3; i++) {
                     long t0 = System.nanoTime();
@@ -30,7 +33,7 @@ final class FuzzFindingTests {
                     best = Math.min(best, (System.nanoTime() - t0) / 1_000_000L);
                     eq(msg, new Control.Bye("x"), "the line parses to the same message");
                 }
-                check(best < 100, "parsing a line with " + (Wire.MAX_LINE - 100) + " trailing line endings took " + best + " ms");
+                check(best < 100, "parsing a line with " + run + " trailing line endings took " + best + " ms");
             }
             eq(Control.parse("{\"type\":\"bye\"}\r\n\r\n"), new Control.Bye(""), "mixed endings are still stripped");
             eq(Control.parse("{\"type\":\"bye\"}"), new Control.Bye(""), "no ending");
