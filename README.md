@@ -8,6 +8,8 @@ implementation of it, tested against the Rust reference peers (`fake_host`, `fak
 the [`rewrite-bridge`](https://crates.io/crates/rewrite-bridge) crate:
 `cargo install rewrite-bridge --version 0.2.3 --features link --examples`.
 
+**Adding this to a game.** Read the [guide to adding a game](https://github.com/patodois/rewrite-bridge/blob/main/docs/INTEGRATING.md) first: it says whether to build a host or a guest, and has a host loop and a guest loop compiled against this library as Java 8 bytecode and run against rewrite-bridge's `fake_host` and `fake_guest`. Not run in a server plugin; see "Use it in your project" below for the dependency.
+
 - No dependencies, no native code, nothing from any game. Package: `dev.patodois.rewritelink`.
 - **Java 8 or newer**: compiled with `javac --release 8`, so it loads on Minecraft 1.7.10 and 1.12.2
   (Java 8), 1.20.1 (Java 17) and 26.x (Java 21 and up). Nothing newer than Java 8 is used, not even
