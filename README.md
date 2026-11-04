@@ -6,7 +6,7 @@ with a Java runtime (a Minecraft mod, a Hytale plugin, a Java server) can be a *
 `docs/CONTRACT.md` in the `rewrite-bridge` repository (revision 6); this library is one
 implementation of it, tested against the Rust reference peers (`fake_host`, `fake_guest`), which come with
 the [`rewrite-bridge`](https://crates.io/crates/rewrite-bridge) crate:
-`cargo install rewrite-bridge --version 0.2.3 --features link --examples`.
+`cargo install rewrite-bridge --version 0.3.0 --features link --examples`.
 
 **Adding this to a game.** Read the [guide to adding a game](https://github.com/patodois/rewrite-bridge/blob/main/docs/INTEGRATING.md) first: it says whether to build a host or a guest, and has a host loop and a guest loop compiled against this library as Java 8 bytecode and run against rewrite-bridge's `fake_host` and `fake_guest`. Not run in a server plugin; see "Use it in your project" below for the dependency.
 
