@@ -1,0 +1,64 @@
+plugins {
+	id 'java'
+}
+
+// Jazzer fuzz targets for link-java. This module is NOT built by the library's build, by CI or by JitPack, and
+// nothing in it ends up in the library's jar: the library stays Java 8 with no runtime dependency, and only this
+// module depends on Jazzer and JUnit. Run it from the repository root:
+//
+//   ./gradlew -p fuzz test                      regression run: replays the committed corpus, a few seconds
+//   ./gradlew -p fuzz test -Pfuzz               fuzzing run: every target for its own `maxDuration` (30 minutes)
+//   ./gradlew -p fuzz test -Pfuzz --tests '*ControlFuzz*'    one class only
+//
+// The corpus the targets replay is in src/test/resources/dev/patodois/rewritelink/<Class>Inputs/<target>/ (Jazzer's
+// own layout). See fuzz/README.md.
+
+repositories {
+	mavenCentral()
+}
+
+java {
+	toolchain {
+		languageVersion = JavaLanguageVersion.of(21)
+	}
+}
+
+dependencies {
+	// Substituted by the composite build (includeBuild('..')): the library as it is in this checkout.
+	testImplementation 'dev.patodois:link-java'
+	testImplementation 'com.code-intelligence:jazzer-junit:0.30.0'
+	testImplementation 'org.junit.jupiter:junit-jupiter:5.11.4'
+	testRuntimeOnly 'org.junit.platform:junit-platform-launcher:1.11.4'
+	testRuntimeOnly 'org.junit.platform:junit-platform-console:1.11.4'
+}
+
+tasks.withType(JavaCompile).configureEach {
+	options.encoding = 'UTF-8'
+}
+
+tasks.named('test') {
+	useJUnitPlatform()
+	maxHeapSize = '1g'
+	testLogging {
+		events 'passed', 'failed'
+		showStandardStreams = true
+		exceptionFormat = 'full'
+	}
+	// The targets open loopback sockets and temporary files; each one runs alone.
+	maxParallelForks = 1
+	// Only the library is instrumented for coverage, not the JDK or the test harness.
+	systemProperty 'jazzer.instrument', 'dev.patodois.rewritelink.**'
+	if (project.hasProperty('fuzz')) {
+		environment 'JAZZER_FUZZ', '1'
+	}
+	outputs.upToDateWhen { false }
+}
+
+// Prints the test runtime classpath, for running one target in its own JVM (several can then fuzz side by side):
+//   JAZZER_FUZZ=1 java -Xmx1g -Djazzer.instrument='dev.patodois.rewritelink.**' -cp "$(./gradlew -p fuzz -q printClasspath)" \
+//       org.junit.platform.console.ConsoleLauncher execute --select-method 'dev.patodois.rewritelink.ControlFuzz#parseLine'
+tasks.register('printClasspath') {
+	doLast {
+		println sourceSets.test.runtimeClasspath.asPath
+	}
+}

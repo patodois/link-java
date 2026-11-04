@@ -1,0 +1,1 @@
+{"type":"hello","role":"host","game":"g","protocol":1,"min_protocol":1,"udp_port":40,"heartbeat_ms":20,"timeout_ms":2000,"session":7}

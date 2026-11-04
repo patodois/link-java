@@ -1,0 +1,9 @@
+build/
+.gradle/
+# what Jazzer writes into the working directory
+.cifuzz-corpus/
+crash-*
+timeout-*
+oom-*
+slow-unit-*
+leak-*
