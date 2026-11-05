@@ -87,8 +87,10 @@ creation where the file system has POSIX permissions, then renames it over `path
 directories. `read` follows symbolic links, refuses anything that is not a regular file (checked before opening, so a FIFO
 cannot block it), refuses on POSIX a file with group or other permissions, refuses more than 4096 bytes, and parses the
 file with the strict control-line parser; its errors never quote the file. Where the default file system has no POSIX
-view (Windows) the permission check is skipped; the directory's ACL is what keeps other users out (that code path has
-not been run on Windows). `Link.close()` removes the file the link wrote; a JVM that dies leaves it behind (the token dies
+view (Windows) the permission check is skipped; the directory's ACL is what keeps other users out (no test checks the ACL).
+The tests of this path run in CI on `windows-latest` (JDK 21, `./gradlew check`: the endpoint file tests and the shared
+endpoint vectors, 43 cases of which 4 skip themselves there: file modes and a FIFO), but nothing was run as two processes or in a
+game on Windows. `Link.close()` removes the file the link wrote; a JVM that dies leaves it behind (the token dies
 with it, the next host makes a new one).
 
 What the token protects, in two sentences: it keeps out other users of the machine and any process that cannot read the
