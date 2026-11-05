@@ -136,7 +136,7 @@ public final class InteropPeer {
 
     // the result
     private final List<String> failures = new ArrayList<>();
-    private int camerasOk, posesOk, collisionTriangles, framesOk, framesBad;
+    private int camerasOk, posesOk, collisionTriangles, framesOk, framesBad, presentationRejections;
 
     private InteropPeer(Role role, String label, Path endpoint, boolean wrongToken) {
         this.role = role;
@@ -309,7 +309,7 @@ public final class InteropPeer {
                     fail("Frame datagram " + k + " says " + fr + ", expected frame " + k + ", camera_seq " + camSeq + ", " + FRAME_W + "x" + FRAME_H);
                     good = false;
                 }
-                PixelFile.Frame got = reader.read(fr, true);
+                PixelFile.Frame got = reader.readLatest(fr, true);
                 if (got == null) {
                     fail("frame " + k + " could not be read from slot " + fr.slot());
                     good = false;
@@ -340,6 +340,13 @@ public final class InteropPeer {
                         fail("frame " + k + ": depth differs");
                         good = false;
                     }
+                }
+                if (reader.read(fr,false)==null || reader.readLatest(fr,false)!=null) fail("a readable duplicate was presented twice");
+                else presentationRejections++;
+                if (k>1) {
+                    Wire.FrameReady old=frameEvents.get(k-2).frame();
+                    if (reader.read(old,false)==null || reader.readLatest(old,false)!=null) fail("an older readable slot regressed presentation");
+                    else presentationRejections++;
                 }
                 if (good) framesOk++;
                 else framesBad++;
@@ -473,6 +480,7 @@ public final class InteropPeer {
         b.append(",\"collision_triangles\":").append(collisionTriangles);
         b.append(",\"frames_ok\":").append(framesOk);
         b.append(",\"frames_bad\":").append(framesBad);
+        b.append(",\"presentation_rejections\":").append(presentationRejections);
         b.append(",\"focus\":").append(list(focus, true));
         b.append(",\"lost_reason\":").append(lostReason == null ? "null" : Json.quote(lostReason));
         b.append(",\"mode\":").append(Json.quote(mode()));
