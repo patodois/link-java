@@ -207,11 +207,13 @@ public final class Link implements AutoCloseable {
             ch.setOption(StandardSocketOptions.TCP_NODELAY, true);
         }
 
-        void queue(Control c) {
+        boolean queue(Control c) {
             byte[] line = c.toLine().getBytes(StandardCharsets.UTF_8);
+            if (line.length > Wire.MAX_LINE) return false;
             if (wlen + line.length > wbuf.length) wbuf = Arrays.copyOf(wbuf, Math.max(wbuf.length * 2, wlen + line.length));
             System.arraycopy(line, 0, wbuf, wlen, line.length);
             wlen += line.length;
+            return true;
         }
 
         /** Writes as much as the socket takes without blocking; returns an error reason or null. */
@@ -957,8 +959,8 @@ public final class Link implements AutoCloseable {
     private void sendControl(Control c) throws WireException {
         if (!(conn instanceof Live)) throw new WireException("not connected");
         Live live = (Live) conn;
+        if (!live.ctl.queue(c)) throw new WireException("control line too long");
         linesSent++;
-        live.ctl.queue(c);
         String err = live.ctl.flush();
         if (err != null) {
             end(err, false);

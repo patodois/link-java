@@ -761,6 +761,7 @@ public final class LinkTests {
             }
         });
 
+        ControlLimitsTests.run();
         ReviewTests.run(args);
         PixelFileTests.run();
         PixelSafety.run();
