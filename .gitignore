@@ -3,3 +3,6 @@ build/
 *.class
 .idea/
 *.iml
+
+# Isolated dependencies for workflow regression tests.
+.workflow-tests/
