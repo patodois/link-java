@@ -18,6 +18,7 @@ final class ControlLimitsTests {
                 try(Link guest=Link.guest(gc)) {
                     check(until(2000,()->{host.poll();return guest.poll().stream().anyMatch(e->e instanceof LinkEvent.HandshakeFailed);}),"oversized hello must report a handshake failure");
                     eq(guest.linesSent,0L,"discarded hello not counted");
+                    check(guest.lastError()!=null && guest.lastError().contains("hello"),"guest retains local hello diagnostic");
                 }
             }
         });
@@ -41,6 +42,7 @@ final class ControlLimitsTests {
                     Method retire=Link.class.getDeclaredMethod("retire",type,String.class,long.class);retire.setAccessible(true);
                     retire.invoke(guest,ctor.newInstance(channel),repeat('x',Wire.MAX_LINE),System.nanoTime()/1000000);
                     eq(guest.linesSent,0L,"discarded bye not counted");
+                    check(guest.lastError()!=null && guest.lastError().contains("bye"),"guest retains local bye diagnostic");
                 }
             }
         });
