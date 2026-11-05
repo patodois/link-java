@@ -100,6 +100,10 @@ public final class LinkDemo {
                     PixelFile.Frame f = reader == null ? null : reader.readLatest(fr, true);
                     if (f == null) {
                         framesMissed++;
+                        if (reader != null && reader.isGone()) {
+                            closeQuietly(reader); reader = null; lastFrame = "none";
+                            log("host", "pixel file gone; cleared cached frame");
+                        }
                     } else {
                         framesRead++;
                         lastFrame = describe(f);
