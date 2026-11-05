@@ -62,7 +62,7 @@ final class VectorTests {
      * rewrite-bridge (it copies the directory and prints {@code VECTORS_DIGEST = ...}) and paste the printed digest
      * here.
      */
-    static final String VECTORS_DIGEST = "547bf4ff7f5369d3ba2d18eca05a2530b8daff0d3e6517471bc5ac0185122d13";
+    static final String VECTORS_DIGEST = "07cf745d30318403b1808b974f050914db061d78a4351683e0c20fc0284ceab8";
 
     /** Vectors this implementation fails, id to reason. Empty when it passes them all. */
     static final Map<String, String> KNOWN_DISAGREEMENTS = new LinkedHashMap<>();
@@ -634,6 +634,10 @@ final class VectorTests {
 
     /** Opens the case's file as the receiver of a frame_channel would and runs its reads. */
     static void checkPixelReader(Map<String, Object> c) throws Exception {
+        if(c.get("channels")!=null) {
+            for(Object channel:arr(c.get("channels"))) checkPixelReader(obj(channel));
+            return;
+        }
         Path tmp = Files.createTempDirectory("rbl-vectors-pf-");
         PixelFile.Reader reader = null;
         try {
