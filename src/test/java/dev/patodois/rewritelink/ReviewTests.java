@@ -315,7 +315,7 @@ final class ReviewTests {
                     he.addAll(p.host.poll());
                     p.guest.poll();
                     return count(he, LinkEvent.Frame.class) == 10;
-                }), "10 frames of file 1; got " + count(he, LinkEvent.Frame.class) + "; events " + he + "; received " + p.host.datagramsReceived + "; foreign " + p.host.foreign + "; malformed " + p.host.malformed + "; sent " + p.guest.datagramsSent + "; dropped " + p.guest.sendDropped);
+                }), "10 frame announcements expected; got " + count(he, LinkEvent.Frame.class));
                 he.clear();
                 p.announce(new Control.FrameChannel("/tmp/second.frames", 32, 16, 3));
                 Thread.sleep(30);

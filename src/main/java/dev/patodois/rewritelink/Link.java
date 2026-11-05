@@ -641,8 +641,7 @@ public final class Link implements AutoCloseable {
             if (!requested) focus = in.focus();
             events.add(new LinkEvent.Focus(in.focus(), requested));
         } else if (msg instanceof Control.FrameChannel) {
-            // A new pixel file numbers its frames from 1 again (CONTRACT.md 8).
-
+            // The consumer replaces its reader and presentation state for this channel.
             events.add(new LinkEvent.FrameChannel((Control.FrameChannel) msg));
         }
         // Bye was handled above; an Unknown type is ignored.

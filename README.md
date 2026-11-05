@@ -3,10 +3,10 @@
 A pure-Java implementation of the **rewrite-bridge passthrough link protocol v1**, so that a game
 with a Java runtime (a Minecraft mod, a Hytale plugin, a Java server) can be a **host** or a
 **guest** next to any other game or rewrite that speaks it. The protocol is defined by
-`docs/CONTRACT.md` in the `rewrite-bridge` repository (revision 6); this library is one
+`docs/CONTRACT.md` in the `rewrite-bridge` repository (revision 7); this library is one
 implementation of it, tested against the Rust reference peers (`fake_host`, `fake_guest`), which come with
 the [`rewrite-bridge`](https://crates.io/crates/rewrite-bridge) crate:
-`cargo install rewrite-bridge --version 0.3.0 --features link --examples`.
+`cargo install rewrite-bridge --version 0.4.0 --features link --examples`.
 
 **Adding this to a game.** Read the [guide to adding a game](https://github.com/patodois/rewrite-bridge/blob/main/docs/INTEGRATING.md) first: it says whether to build a host or a guest, and has a host loop and a guest loop compiled against this library as Java 8 bytecode and run against rewrite-bridge's `fake_host` and `fake_guest`. Not run in a server plugin; see "Use it in your project" below for the dependency.
 
@@ -21,6 +21,20 @@ the [`rewrite-bridge`](https://crates.io/crates/rewrite-bridge) crate:
 - Non-blocking: `Link.poll()` never blocks, `Link` methods are synchronized so a game thread may
   send while a helper thread polls (`LinkRunner` is that helper thread).
 
+## Migrating pixel consumers to 0.3.0
+
+`LinkEvent.Frame` is an unvalidated announcement. `Link` no longer filters frame numbers
+before checking slots. Present frames with `reader.readLatest(frameReady, wantDepth)`;
+`read` remains an unordered inspection/re-read API. Set `wantDepth` to false to omit depth.
+Only successful copies advance order; `staleReads()` counts duplicate/older nonzero frames.
+A null announcement returns null without changing counters. On a new channel, session loss,
+or `reader.isGone()`, close the old reader and clear its cached image, even when opening a
+replacement fails. Discard asynchronous results from replaced readers. This minor version
+is intentionally incompatible with old presentation consumers despite unchanged signatures.
+Unix readers use bounded positional I/O and never invoke Unsafe when closing. Windows keeps
+a read-only map. See [PIXEL-IO.md](PIXEL-IO.md).
+
+
 ## What is in it
 
 | Class | Role |
@@ -29,27 +43,28 @@ the [`rewrite-bridge`](https://crates.io/crates/rewrite-bridge) crate:
 | `Control` | TCP JSON-line messages (`hello`, `spawn`, `despawn`, `input`, `frame_channel`, `bye`) |
 | `Json` | A small strict JSON reader/writer for the control lines |
 | `Tokens`, `Endpoint` | The optional authentication token and the endpoint file (contract revision 6, below) |
-| `Link` | One side of a session: handshake, version negotiation, heartbeats, the monotonic watchdog, stale/duplicate/foreign datagram rules, bye + half-close + drain (CONTRACT 6.1) without blocking |
+| `Link` | One side of a session: handshake, version negotiation, heartbeats, the monotonic watchdog, non-frame staleness and foreign-datagram rules, bye + half-close + drain (CONTRACT 6.1) without blocking |
 | `LinkRunner` | A daemon thread that polls a `Link` and hands events to a listener |
 | `LinkEvent`, `LinkConfig` | What `poll()` reports, and the settings |
 | `Quat` | Quaternion helpers in the link's convention |
-| `PixelFile` | The pixel file: `Reader` (read-only mapping, seqlock, depth plane checks) and `Writer` |
+| `PixelFile` | The pixel file: `Reader` (positional Unix I/O or a Windows map, validated presentation order) and `Writer` |
 | `LinkDemo` | A command-line stand-in host or guest, mirroring the Rust `fake_host` / `fake_guest` |
 
-`PixelFile` is the shared-memory pixel channel of CONTRACT 9.6 (revision 3): a `Reader` that maps the
-file read-only, validates it, and copies a slot with the seqlock (colour and the optional linear depth
+`PixelFile` is the shared-memory pixel channel of CONTRACT 9.6 (revision 3): a `Reader` that reads the
+file with bounded positional I/O on Unix or a protected Windows map, validates it, and copies a slot with the seqlock (colour and the optional linear depth
 plane), and a `Writer` for the sending side. `frame_channel` and `Frame` are parsed by `Link` as usual.
 
 The seqlock has to work without `VarHandle` and without `sun.misc.Unsafe`, which Java 8 does not offer
-or this library does not want. (`PixelFile.Writer.close()` is the one place that reaches for Unsafe, by
-reflection and only to unmap the file; see "Contract revisions 4 and 5" below.) The `lock` word is accessed through a `LongBuffer` view of the mapping
+or this library does not want. (Writers and Windows mapped-reader cleanup may reach for Unsafe, by
+reflection and only to unmap the file; see "Contract revisions 4 and 5" below.) Writers and Windows readers access `lock` through a `LongBuffer` view of the mapping
 (one aligned 64-bit access on every platform; `ByteBuffer.getLong` can be assembled byte by byte on a
 Java 8 that does not know the CPU), and the contract's release and acquire fences are a full fence made
 from a volatile read-modify-write (`AtomicInteger.incrementAndGet`), which Java 8 specifies as a total
 order and HotSpot compiles to a real barrier that the JIT also respects for the mapped memory. The
 long comment at the top of `PixelFile.java` has the details, and `PixelFileTests` runs a writer thread
 against a reader thread (two slots, so the writer keeps lapping the reader) to check that a torn copy is
-never accepted.
+never accepted in that test. Unix readers use bounded observations, with the publication limits
+described in [PIXEL-IO.md](PIXEL-IO.md); these are not formal atomic acquire loads from a peer.
 
 ## Authentication: the token and the endpoint file (contract revision 6, version 0.2.0)
 
@@ -139,7 +154,7 @@ Revision 4: what the code review of both implementations changed, in the order o
   from a `PixelFile.Writer`. A new `frame_channel` resets the frame staleness of the receiving link.
 - **`PixelFile.Reader.open`** refuses a relative path, a symlink or anything that is not a regular file,
   `width` or `height` above 16384, a `stride` other than `width * 4`, and sizes that overflow. `read`
-  returns null (`isGone()`) once the file is shorter than the mapping, instead of faulting.
+  returns null when the file shrinks or a positional copy fails; `isGone()` also reports a detected shrink. Unix readers do not access peer-owned mappings (revision 7).
   Java cannot open a FIFO without blocking, so the type is checked before the open.
 - **`PixelFile.Writer`** creates its file with `CREATE_NEW`, validates its arguments
   (`IllegalArgumentException`, nothing written, no frame number used), always leaves the slot lock even,
@@ -161,7 +176,7 @@ No account and no release upload is needed: [JitPack](https://jitpack.io) builds
 request and serves it as a Maven artifact (`jitpack.yml` asks it for JDK 21, which Gradle 9 needs). The coordinates are
 
 ```
-com.github.patodois:link-java:<tag>        e.g. com.github.patodois:link-java:v0.2.0
+com.github.patodois:link-java:<tag>        e.g. com.github.patodois:link-java:v0.3.0
 ```
 
 where `<tag>` is a tag of this repository (see the [releases and tags](https://github.com/patodois/link-java/tags)); `main-SNAPSHOT`
@@ -175,7 +190,7 @@ repositories {
     maven { url 'https://jitpack.io' }
 }
 dependencies {
-    implementation 'com.github.patodois:link-java:v0.2.0'
+    implementation 'com.github.patodois:link-java:v0.3.0'
 }
 ```
 
@@ -187,7 +202,7 @@ repositories {
     maven("https://jitpack.io")
 }
 dependencies {
-    implementation("com.github.patodois:link-java:v0.2.0")
+    implementation("com.github.patodois:link-java:v0.3.0")
 }
 ```
 
@@ -204,7 +219,7 @@ Maven:
 <dependency>
   <groupId>com.github.patodois</groupId>
   <artifactId>link-java</artifactId>
-  <version>v0.2.0</version>
+  <version>v0.3.0</version>
 </dependency>
 ```
 
@@ -319,12 +334,3 @@ ported to Java 8 without changing what it does (see "What is in it").
 ## License
 
 MIT OR Apache-2.0, at your option: see `LICENSE-MIT` and `LICENSE-APACHE`.
-
-### Ordem de apresentação de pixels
-
-Os eventos Frame são anúncios ainda não validados. Ao trocar frame_channel ou perder a sessão,
-limpe a imagem anterior e descarte o leitor anterior, inclusive se o novo arquivo não abrir.
-Use a leitura de apresentação read_latest (Rust/C), ReadLatest (C#) ou readLatest (Java):
-só uma cópia válida avança o maior número do arquivo atual. As leituras brutas continuam
-permitindo releituras e não implementam ordem de apresentação. Consumidores assíncronos devem
-associar trabalhos e resultados à instância do leitor e rejeitar resultados de leitores substituídos.
