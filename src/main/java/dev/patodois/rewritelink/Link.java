@@ -371,6 +371,10 @@ public final class Link implements AutoCloseable {
     // ---------------------------------------------------------------- construction
 
     private boolean closed;
+    private String lastError;
+
+    /** Latest sanitized local control error, or null after a successful TCP connection. */
+    public synchronized String lastError() { return lastError; }
 
     private Link(Role role, LinkConfig cfg) throws IOException {
         this.role = role;
@@ -544,7 +548,12 @@ public final class Link implements AutoCloseable {
             try {
                 if (c.ch().finishConnect()) {
                     Ctl ctl = new Ctl(c.ch());
-                    ctl.queue(hello(Wire.PROTOCOL_VERSION, null, c.token()));
+                    if(!ctl.queue(hello(Wire.PROTOCOL_VERSION, null, c.token()))) {
+                        lastError="local hello control line too long";
+                        events.add(new LinkEvent.HandshakeFailed(lastError));
+                        ctl.closeQuietly();conn=new Idle(now+cfg.reconnectMs);return;
+                    }
+                    lastError=null;
                     linesSent++;
                     ctl.flush();
                     conn = new Handshake(ctl, now);
@@ -569,8 +578,8 @@ public final class Link implements AutoCloseable {
     /** Closes a control connection gracefully, after an optional bye. */
     private void retire(Ctl ctl, String bye, long now) {
         if (bye != null) {
-            ctl.queue(new Control.Bye(bye));
-            linesSent++;
+            if(ctl.queue(new Control.Bye(bye))) linesSent++;
+            else lastError="local bye control line too long";
         }
         Closing c = new Closing(ctl, now);
         if (c.pump(now)) closing.add(c);
@@ -696,12 +705,16 @@ public final class Link implements AutoCloseable {
                 new InetSocketAddress(LOOPBACK, h.udpPort()), h.heartbeatMs(), timeoutMs);
         Ctl ctl = ((Handshake) conn).ctl();
         if (role == Role.HOST) {
-            ctl.queue(hello(protocol, session, null));
+            if(!ctl.queue(hello(protocol, session, null))) {
+                lastError="local hello control line too long";
+                return new String[]{lastError,"bye"};
+            }
             linesSent++;
             ctl.flush();
         }
         resetSession();
         conn = new Live(ctl, peer, timeoutMs, now);
+        lastError=null;
         lastBeat = now;
         events.add(new LinkEvent.Connected(peer));
         try {

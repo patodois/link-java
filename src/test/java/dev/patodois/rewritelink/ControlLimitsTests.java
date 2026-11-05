@@ -9,7 +9,41 @@ import static dev.patodois.rewritelink.LinkTests.*;
 /** Control limits are checked before queue mutation or network writes. */
 final class ControlLimitsTests {
     private static String repeat(char c,int n) {char[] a=new char[n];Arrays.fill(a,c);return new String(a);}
+    @SuppressWarnings("try") // Explicit repeated close is the lifecycle regression under test.
     static void run() {
+        test("internal control limits: oversized hello fails visibly", () -> {
+            LinkConfig hc=new LinkConfig("host");hc.controlPort=0;
+            try(Link host=Link.host(hc)) {
+                LinkConfig gc=new LinkConfig(repeat('x',Wire.MAX_LINE));gc.controlPort=host.controlPort();
+                try(Link guest=Link.guest(gc)) {
+                    check(until(2000,()->{host.poll();return guest.poll().stream().anyMatch(e->e instanceof LinkEvent.HandshakeFailed);}),"oversized hello must report a handshake failure");
+                    eq(guest.linesSent,0L,"discarded hello not counted");
+                }
+            }
+        });
+        test("internal control limits: oversized host reply fails visibly", () -> {
+            LinkConfig hc=new LinkConfig(repeat('x',Wire.MAX_LINE));hc.controlPort=0;
+            try(Link host=Link.host(hc)) {
+                LinkConfig gc=new LinkConfig("guest");gc.controlPort=host.controlPort();
+                try(Link guest=Link.guest(gc)) {
+                    check(until(2000,()->{guest.poll();return host.poll().stream().anyMatch(e->e instanceof LinkEvent.HandshakeFailed);}),"oversized host hello must report failure");
+                    check(!host.isConnected() && host.lastError().contains("hello"),"host retains local diagnostic");
+                    eq(host.linesSent,1L,"only the short error bye is counted");
+                }
+            }
+        });
+        test("internal control limits: discarded bye is not counted", () -> {
+            try(java.nio.channels.ServerSocketChannel server=java.nio.channels.ServerSocketChannel.open()) {
+                server.bind(new java.net.InetSocketAddress("127.0.0.1",0));
+                try(SocketChannel channel=SocketChannel.open(server.getLocalAddress());SocketChannel remote=server.accept();Link guest=Link.guest(new LinkConfig("guest"))) {
+                    check(remote.isConnected(),"loopback peer connected");
+                    Class<?> type=Class.forName(Link.class.getName()+"$Ctl");Constructor<?> ctor=type.getDeclaredConstructor(SocketChannel.class);ctor.setAccessible(true);
+                    Method retire=Link.class.getDeclaredMethod("retire",type,String.class,long.class);retire.setAccessible(true);
+                    retire.invoke(guest,ctor.newInstance(channel),repeat('x',Wire.MAX_LINE),System.nanoTime()/1000000);
+                    eq(guest.linesSent,0L,"discarded bye not counted");
+                }
+            }
+        });
         test("lifecycle: a closed guest never reconnects on later polls", () -> {
             try(java.nio.channels.ServerSocketChannel server=java.nio.channels.ServerSocketChannel.open()) {
                 server.bind(new java.net.InetSocketAddress("127.0.0.1",0));server.configureBlocking(false);
