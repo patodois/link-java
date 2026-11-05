@@ -85,6 +85,29 @@ public final class PixelSafety {
         }
     }
     static void apiTests() {
+        LinkTests.test("pixel widths can shrink and grow without stale limits or pixels", () -> {
+            for(boolean wantDepth:new boolean[]{false,true}) {
+                Path path=Files.createTempDirectory("width-sequence").resolve("f.frames");
+                try(PixelFile.Writer w=new PixelFile.Writer(path,16,16,1,true);
+                    PixelFile.Reader r=PixelFile.Reader.open(path)) {
+                    int frame=0, failures=0;
+                    for(int width:new int[]{15,14,15,8,7,16,1,14,15}) {
+                        frame++;int count=width*9;
+                        byte[] pixels=new byte[count*4];float[] depth=new float[count];
+                        for(int j=0;j<pixels.length;j++) pixels[j]=(byte)(j*37+frame*11);
+                        for(int j=0;j<count;j++) depth[j]=j+frame*1000;
+                        w.write(pixels,depth,width,9,0,frame);
+                        try {
+                            PixelFile.Frame got=r.readLatest(new Wire.FrameReady(frame,0,0,width,9),wantDepth);
+                            if(got==null || !Arrays.equals(got.rgba(),pixels) || (wantDepth && !Arrays.equals(got.depth(),depth))) {
+                                failures++;System.out.println("wrong pixels at frame "+frame+" width "+width);
+                            }
+                        } catch(RuntimeException e) {failures++;System.out.println("width "+width+": "+e);}
+                    }
+                    LinkTests.check(failures==0,"width sequence produced "+failures+" failures");
+                }
+            }
+        });
         LinkTests.test("truncation inside either plane cannot produce a frame", () -> {
             if(System.getProperty("os.name").startsWith("Windows")) return;
             for(boolean depth:new boolean[]{false,true}) {

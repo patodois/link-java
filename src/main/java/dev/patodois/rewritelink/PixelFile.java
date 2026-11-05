@@ -354,9 +354,9 @@ public final class PixelFile {
             if(padding.capacity()<gap) padding=ByteBuffer.allocateDirect(gap);
             if(vectorOwner!=io || vectorRow!=row || vectorGap!=gap) {
                 for(int y=0;y<8;y++) {
-                    ByteBuffer data=io.duplicate();data.position(y*row);data.limit((y+1)*row);
+                    ByteBuffer data=io.duplicate();data.clear();data.position(y*row);data.limit((y+1)*row);
                     vectors[y*2]=data.slice();
-                    ByteBuffer pad=padding.duplicate();pad.limit(gap);vectors[y*2+1]=pad.slice();
+                    ByteBuffer pad=padding.duplicate();pad.clear();pad.limit(gap);vectors[y*2+1]=pad.slice();
                 }
                 vectorOwner=io;vectorRow=row;vectorGap=gap;
             }
