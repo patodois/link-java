@@ -62,7 +62,7 @@ final class VectorTests {
      * rewrite-bridge (it copies the directory and prints {@code VECTORS_DIGEST = ...}) and paste the printed digest
      * here.
      */
-    static final String VECTORS_DIGEST = "e0de8c0cc9146c1351e56047a14e80128717a56944f7e0a5b2f6189d8de88b6a";
+    static final String VECTORS_DIGEST = "547bf4ff7f5369d3ba2d18eca05a2530b8daff0d3e6517471bc5ac0185122d13";
 
     /** Vectors this implementation fails, id to reason. Empty when it passes them all. */
     static final Map<String, String> KNOWN_DISAGREEMENTS = new LinkedHashMap<>();
@@ -593,8 +593,8 @@ final class VectorTests {
 
     static void checkRead(PixelFile.Reader reader, Map<String, Object> rd) throws Mismatch {
         boolean wantDepth = isTrue(rd.get("want_depth"));
-        PixelFile.Frame got = reader.read(u64(rd.get("frame")), (int) num(rd.get("slot")), (int) num(rd.get("width")),
-                (int) num(rd.get("height")), wantDepth);
+        Wire.FrameReady ready = new Wire.FrameReady(u64(rd.get("frame")), (int)num(rd.get("slot")), (int)num(rd.get("camera_seq")), (int)num(rd.get("width")), (int)num(rd.get("height")));
+        PixelFile.Frame got = isTrue(rd.get("latest")) ? reader.readLatest(ready, wantDepth) : reader.read(ready, wantDepth);
         switch (str(rd.get("expect"))) {
             case "skip":
                 if (got != null) throw new Mismatch("delivered " + got + " (" + rd.get("why") + ")");
