@@ -79,8 +79,7 @@ public final class PixelSafety {
         });
     }
     static void readerClose() throws Exception {
-        String root = System.getenv("RBL_VECTORS_DIR");
-        Path path = Paths.get(root, "pixelfiles", "colour_4x2_3slots.bin");
+        Path path = VectorTests.vectorsDir().resolve("pixelfiles").resolve("colour_4x2_3slots.bin");
         try (PixelFile.Reader r = PixelFile.Reader.open(path)) {
             if (r.read(new Wire.FrameReady(1,1,101,4,2),false)==null) throw new AssertionError("fixture read failed");
         }
