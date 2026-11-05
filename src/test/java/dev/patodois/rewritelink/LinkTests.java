@@ -26,12 +26,15 @@ import dev.patodois.rewritelink.Wire.WireException;
 public final class LinkTests {
     private static int passed, failed;
 
+    static int failures() { return failed; }
+
     @FunctionalInterface
     interface Test {
         void run() throws Exception;
     }
 
     static void test(String name, Test t) {
+        if (!name.contains(System.getProperty("rbl.testFilter", ""))) return;
         try {
             t.run();
             passed++;
@@ -760,6 +763,7 @@ public final class LinkTests {
 
         ReviewTests.run(args);
         PixelFileTests.run();
+        PixelSafety.run();
         TokenTests.run();
         FuzzFindingTests.run();
         VectorTests.run();

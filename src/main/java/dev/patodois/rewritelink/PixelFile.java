@@ -23,6 +23,7 @@ import java.util.Objects;
  */
 public final class PixelFile {
     private PixelFile() {}
+    private static final boolean WINDOWS = System.getProperty("os.name", "").startsWith("Windows");
 
     public static final int HEADER_LEN = 64;
     public static final int SLOT_HEADER_LEN = 64;
@@ -158,12 +159,13 @@ public final class PixelFile {
 
     // ------------------------------------------------------------------ reader
 
-    /** Maps a pixel file read-only. Not thread-safe: use one reader per thread. */
+    /** Reads with positional I/O on Unix and a read-only map on Windows. Not thread-safe: use one reader per thread. */
     public static final class Reader implements AutoCloseable {
         private final FileChannel channel;
         private long newest;
         private final long mapped; // the file length that was mapped
         private final ByteBuffer map;
+        private final ByteBuffer io; // bounded reusable direct I/O scratch, never peer-owned memory
         private final LongBuffer locks; // the same mapping as 64-bit words: slot lock i is word (slot start) / 8
         public final int slots, width, height, stride;
         public final long slotSize;
@@ -179,7 +181,8 @@ public final class PixelFile {
             this.channel = channel;
             this.mapped = mapped;
             this.map = map;
-            this.locks = map.asLongBuffer();
+            this.locks = map == null ? null : map.asLongBuffer();
+            this.io = map == null ? ByteBuffer.allocateDirect(1024 * 1024).order(ByteOrder.LITTLE_ENDIAN) : null;
             this.slots = slots;
             this.width = width;
             this.height = height;
@@ -191,11 +194,9 @@ public final class PixelFile {
         }
 
         /**
-         * True when the file is now shorter than the mapping made of it (the peer truncated it), or
-         * the reader is closed. {@link #read} then returns null without touching the mapping, which
-         * would fault. This narrows the window but cannot close it: a truncation between the check
-         * and the copy still faults (as an {@link InternalError} on HotSpot). A correct sender never
-         * truncates a pixel file; this guards against a broken or hostile one.
+         * True when the opened file shrank or cannot be examined. Positional reads also detect
+         * truncation after this check without touching peer-owned pages. Windows mappings prevent
+         * ordinary file truncation. Writers must still obey the contract's lifetime rules.
          */
         public boolean isGone() {
             try {
@@ -232,7 +233,9 @@ public final class PixelFile {
                 long size = ch.size();
                 if (size < HEADER_LEN) throw new FormatException("pixel file shorter than its header");
                 if (size > Integer.MAX_VALUE) throw new FormatException("pixel file larger than 2 GiB");
-                ByteBuffer m = ch.map(FileChannel.MapMode.READ_ONLY, 0, size).order(ByteOrder.LITTLE_ENDIAN);
+                ByteBuffer m = ByteBuffer.allocate(HEADER_LEN).order(ByteOrder.LITTLE_ENDIAN);
+                if (!readExact(ch, m, 0)) throw new FormatException("pixel header truncated while opening");
+                m.flip();
                 byte[] magic = new byte[8];
                 ByteBuffer head = m.duplicate();
                 head.get(magic); // relative get from position 0: the absolute bulk get is Java 13
@@ -269,7 +272,12 @@ public final class PixelFile {
                 } catch (ArithmeticException overflow) {
                     throw new FormatException("the sizes in the pixel file header overflow");
                 }
-                return new Reader(ch, size, m, slots, w, h, stride, slotSize, depthFormat, depthStride, depthOffset);
+                ByteBuffer pixels = WINDOWS ? ch.map(FileChannel.MapMode.READ_ONLY, 0, size).order(ByteOrder.LITTLE_ENDIAN) : null;
+                if (pixels != null && ch.size() < size) {
+                    unmap(pixels);
+                    throw new FormatException("pixel file shrank before mapping");
+                }
+                return new Reader(ch, size, pixels, slots, w, h, stride, slotSize, depthFormat, depthStride, depthOffset);
             } catch (IOException | RuntimeException e) {
                 ch.close();
                 throw e;
@@ -280,7 +288,7 @@ public final class PixelFile {
          * replacement open a new reader and invalidate the previous image, even if opening fails.
          * The read overloads remain unordered low-level copies. */
         public Frame readLatest(Wire.FrameReady ready, boolean wantDepth) {
-            if (Long.compareUnsigned(ready.frame(), newest) <= 0) return null;
+            if (Long.compareUnsigned(ready.frame(), newest) <= 0) { skippedOtherFrame++; return null; }
             Frame f = read(ready, wantDepth);
             if (f != null) newest = f.frame();
             return f;
@@ -320,6 +328,56 @@ public final class PixelFile {
             return readSlot(frame, slot, 0, 0, wantDepth);
         }
 
+        private static boolean readExact(FileChannel ch, ByteBuffer dst, long at) throws IOException {
+            while (dst.hasRemaining()) {
+                int n = ch.read(dst, at);
+                if (n <= 0) return false;
+                at += n;
+            }
+            return true;
+        }
+        private boolean copyPlane(long at, int stride, int row, int height, byte[] rgba, float[] depth) throws IOException {
+            int rows = stride == row ? 1 : height;
+            int bytes = stride == row ? row * height : row;
+            int out = 0;
+            for (int y=0; y<rows; y++) {
+                int done=0;
+                while (done < bytes) {
+                    int n = Math.min(bytes-done, io.capacity());
+                    io.clear(); io.limit(n);
+                    if (!readExact(channel, io, at + (long)y*stride + done)) return false;
+                    io.flip();
+                    if (rgba != null) io.get(rgba, out, n);
+                    else io.asFloatBuffer().get(depth, out/4, n/4);
+                    done += n; out += n;
+                }
+            }
+            return true;
+        }
+        private Frame readFile(long frame, int slot, int dw, int dh, boolean wantDepth) {
+            try {
+                long base = HEADER_LEN + (long)slot * slotSize;
+                ByteBuffer head = ByteBuffer.allocate(SLOT_HEADER_LEN).order(ByteOrder.LITTLE_ENDIAN);
+                if (!readExact(channel, head, base)) { skippedGone++; return null; }
+                long l1 = head.getLong(0); fence();
+                if ((l1 & 1) != 0) { skippedBusy++; return null; }
+                long f = head.getLong(8), time = head.getLong(16);
+                int cam = head.getInt(24), w = head.getInt(28), h = head.getInt(32);
+                if (f != frame || w < 1 || h < 1 || w > width || h > height || (dw != 0 && (w != dw || h != dh))) { skippedOtherFrame++; return null; }
+                byte[] rgba = new byte[w*h*4];
+                if (!copyPlane(base + SLOT_HEADER_LEN, stride, w*4, h, rgba, null)) { skippedGone++; return null; }
+                float[] depth = null;
+                if (wantDepth && hasDepth()) {
+                    depth = new float[w*h];
+                    if (!copyPlane(base + depthOffset, depthStride, w*4, h, null, depth)) { skippedGone++; return null; }
+                }
+                fence(); head.clear(); head.limit(16);
+                if (!readExact(channel, head, base)) { skippedGone++; return null; }
+                if (head.getLong(0) != l1 || head.getLong(8) != frame) { skippedOverwritten++; return null; }
+                return new Frame(f, time, cam, w, h, rgba, depth);
+            } catch (IOException e) { skippedGone++; return null; }
+        }
+
         /** {@code dw} and {@code dh} are the datagram's size, or 0 when the caller has none. */
         private Frame readSlot(long frame, int slot, int dw, int dh, boolean wantDepth) {
             if (slot < 0 || slot >= slots) return null;
@@ -331,6 +389,7 @@ public final class PixelFile {
                 skippedGone++;
                 return null;
             }
+            if (map == null) return readFile(frame, slot, dw, dh, wantDepth);
             int base = (int) (HEADER_LEN + (long) slot * slotSize);
             long l1 = locks.get(base >> 3); // step 1: l1 = lock, then the acquire (see "the seqlock on Java 8")
             fence();
@@ -370,7 +429,9 @@ public final class PixelFile {
         @Override
         public void close() {
             try {
-                channel.close(); // the mapping stays valid until it is garbage collected; nothing is written through it
+                channel.close();
+                if (io != null) unmap(io); // owned scratch only; no peer pages exist on Unix
+                if (map != null) unmap(map); // Windows: release the section when the runtime permits
             } catch (IOException ignored) {
                 // nothing to do
             }
