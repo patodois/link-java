@@ -101,6 +101,21 @@ public final class PixelSafety {
                 }
             }
         });
+        LinkTests.test("cropped planes use bounded vector reads", () -> {
+            if(System.getProperty("os.name").startsWith("Windows")) return;
+            Path path=Files.createTempDirectory("gather").resolve("f.frames");
+            try(PixelFile.Writer w=new PixelFile.Writer(path,16,8,1,true)) {
+                byte[] px=new byte[128];Arrays.fill(px,(byte)7);float[] depth=new float[32];Arrays.fill(depth,2f);
+                w.write(px,depth,8,4,0,1);
+                try(PixelFile.Reader r=PixelFile.Reader.open(path)) {
+                    Field field=PixelFile.Reader.class.getDeclaredField("channel");field.setAccessible(true);
+                    TruncateAfterSize ch=new TruncateAfterSize((FileChannel)field.get(r),path);ch.onSize=false;ch.armed=false;field.set(r,ch);
+                    PixelFile.Frame got=r.read(new Wire.FrameReady(1,0,0,8,4),true);
+                    LinkTests.check(got!=null && Arrays.equals(got.rgba(),px) && Arrays.equals(got.depth(),depth),"cropped rows retain their values");
+                    LinkTests.check(ch.reads==4,"header, two planes and final identity: "+ch.reads);
+                }
+            }
+        });
         LinkTests.test("reader close on Unix does not invoke Unsafe", () -> {
             if (System.getProperty("os.name").startsWith("Windows")) return;
             String java = Paths.get(System.getProperty("java.home"),"bin","java").toString();
@@ -131,13 +146,14 @@ public final class PixelSafety {
     }
 
     static void bench() throws Exception {
-        int[][] sizes={{1280,720},{1920,1080},{3840,2160},{8192,8192},{16384,1},{16384,4096}};
+        int[][] sizes={{1280,720,1280,720},{1920,1080,1920,1080},{3840,2160,3840,2160},{8192,8192,8192,8192},{16384,1,16384,1},{16384,4096,16384,4096},{1920,1080,1280,720},{3840,2160,1920,1080},{16384,4096,8192,4096},{16384,4096,1,4096}};
         for(int[] size:sizes) for(boolean dep:new boolean[]{false,true}) {
-            int width=size[0],height=size[1],pixels=width*height,n=pixels>10000000?5:30;
+            int fw=size[0],fh=size[1],width=size[2],height=size[3],pixels=width*height,n=pixels>10000000?5:30;
+            if(System.getenv("RBL_BENCH_CROPPED_ONLY")!=null && width==fw) continue;
             Path path=Files.createTempDirectory("bench").resolve("f.frames");
             byte[] px=new byte[pixels*4]; Arrays.fill(px,(byte)7);
             float[] depth=dep?new float[pixels]:null; if(depth!=null) Arrays.fill(depth,2f);
-            try(PixelFile.Writer w=new PixelFile.Writer(path,width,height,1,dep)) {
+            try(PixelFile.Writer w=new PixelFile.Writer(path,fw,fh,1,dep)) {
                 w.write(px,depth,width,height,0,1);
                 try(PixelFile.Reader r=PixelFile.Reader.open(path)) {
                     Wire.FrameReady ready=new Wire.FrameReady(1,0,0,width,height);
@@ -151,7 +167,7 @@ public final class PixelSafety {
                         if(j>=2) times[j-2]=ms;
                     }
                     Arrays.sort(times);
-                    System.out.printf(Locale.ROOT,"java,%d,%d,%s,%d,%.6f,%.6f%n",width,height,dep,n,times[n/2],times[n*95/100]);
+                    System.out.printf(Locale.ROOT,"java,%d,%d,%d,%d,%s,%d,%.6f,%.6f,%.6f%n",fw,fh,width,height,dep,n,times[n/10],times[n/2],times[n*95/100]);
                 }
             }
         }

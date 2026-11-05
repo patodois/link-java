@@ -1,63 +1,114 @@
-# Leitura de pixels e tolerância a truncamento
+# Pixel readers and presentation migration
 
-O formato no fio e os offsets do arquivo da revisão 6 permanecem iguais.
+This branch proposes contract revision 7 without changing protocol version 1, datagrams,
+file headers, slot offsets or depth layout. Writers retain their mapped publication path.
 
-No Unix o leitor não mapeia páginas do peer. Usa I/O posicional do descritor aberto,
-com leitura limitada do cabeçalho, validação dos tamanhos, cópia dos planos e segunda
-observação do lock. Uma leitura curta é completada; EOF ou erro descarta a cópia.
-A consulta de tamanho é uma rejeição antecipada, não uma proteção do mapa.
-Linhas contíguas são copiadas em bloco. Java 8 usa scratch direto de 1 MiB e
-FileChannel.read com posição. C# netstandard2.0 usa pread de libc com SafeFileHandle
-e buffers fixados, evitando cache de FileStream e preservando o tempo de vida do handle.
+## Presenting frames
 
-No Windows o mapa somente leitura permanece, com as cargas atômicas anteriores.
-SetEndOfFile normalmente recusa truncar um arquivo com seção ativa, mesmo se outro
-processo tenta fazê-lo. Rust e os ports gerenciados leem o cabeçalho por I/O limitado antes do mapa;
-o C só acessa seu mapa depois de confirmar novamente o tamanho com a seção já ativa.
-Os quatro recusam um encolhimento anterior à criação do mapa antes de usá-lo. Windows
-não foi rodado nesta tarefa. Falhas de paginação e de armazenamento continuam fora
-da garantia. Linux também não foi rodado; o caminho POSIX foi executado no macOS arm64.
+A Frame event is an unvalidated announcement. Use read_latest (Rust/C), ReadLatest (C#),
+or readLatest (Java) for presentation. Only a successful current-file copy advances the
+number. Raw read APIs remain unordered for inspection and re-reading. Rust accepts an
+optional depth destination; the other APIs can omit depth using their existing argument.
+Output buffers supplied by callers are valid only on success and may contain partial or
+previous bytes after a miss. Clear the displayed image and discard the old reader on a new
+channel, session loss or a gone reader, including when opening the replacement fails.
+Async results must still belong to the active reader before they are published.
 
-Leituras de apresentação avançam o contador apenas após cópia válida. Uma nova instância
-de leitor inicia a ordem em zero. Um consumidor deve limpar a imagem e descartar resultados
-assíncronos do leitor anterior ao receber frame_channel ou perder a sessão, inclusive se
-abrir o arquivo novo falha. Leituras brutas não filtram ordem.
+Reader stale counters count duplicate/older nonzero presentation reads: stale_reads() in
+Rust, pixel stats.stale in C, SkippedStale in C#, staleReads() in Java. Null frame arguments
+are caller misses: C returns RBL_ERR_ARGS, C# and Java return null, without counters or state
+changes. Rust's borrowed FrameReady cannot be null. Frame number zero is invalid, not a
+presentation-staleness event.
 
-A revisão 6 diz literalmente mmap e cargas acquire; pread elimina a falha de página por
-truncamento, mas POSIX não define uma leitura como carga atômica acquire do escritor.
-As barreiras, comparações de lock e testes de contenção dão evidência local, sem uma prova
-para todo SO e sistema de arquivos. Um escritor que reutilize lock e frame ao reconstruir
-conteúdo no mesmo arquivo pode causar ABA. O writer continua mapeado e depende de que
-ninguém trunque seu próprio arquivo. I/O pode bloquear. No Rust, WASI continua sem suporte
-a pixels porque o writer precisa de mmap. Uma negociação futura de handles com tamanho
-protegido e identificador de canal exigiria extensão do contrato.
+## Unix and Windows I/O
 
-Benchmarks: arquivos sintéticos com cache aquecido, duas leituras de aquecimento,
-30 amostras nas resoluções menores e 5 nos frames de 2^26 pixels; cor e cor com depth.
-São medidas CPU de cópia completa, com validação, e não incluem GPU, IPC ou renderização.
-Rust e C reutilizam buffers; C# e Java alocam a saída conforme suas APIs. GC é solicitado
-antes das amostras gerenciadas, fora da região medida. Não comparar os números entre
-linguagens como se as políticas de alocação fossem iguais. O arquivo é removido após cada caso.
+Unix readers use bounded positional I/O and never dereference peer-owned mapped pages.
+They validate the header and dimensions, observe the lock, copy requested planes, then read
+both lock and frame again. Short reads are completed; EOF and I/O errors reject the entire
+copy. The metadata size check also rejects shrinking unused tail bytes. It is an early
+rejection, not the protection against later truncation.
 
-## Medição local desta implementação
+Normal cropped planes use up to eight rows per vectored read on macOS/Linux (preadv in
+Rust/C/C#, scatter read after positioning the private single-threaded FileChannel in Java).
+Data goes directly into owned output in Rust/C/C#; padding goes into reusable scratch and
+is discarded. Java reuses packed direct buffers before copying into its array results.
+This reduces syscall count without a full-plane scratch allocation. Grouping is limited to
+strides up to 16 KiB and spans up to four times the useful output. Wider or very sparse files
+keep per-row reads: measurements showed that reading their padding costs more than the
+saved syscalls. Full-width frames retain contiguous copies. Other Unix targets and a missing
+C# preadv binding use bounded 32 KiB packed spans under the same limits, then per-row reads.
+Rust/C retry interruptions and continue partial vectored reads, including within a vector.
 
-macOS arm64, valores em ms por frame. mmap anterior versus I/O posicional final.
+Java owned direct scratch is reclaimed by the JVM without invoking Unsafe on Unix reader
+close. The writer's existing cleaner path is unchanged. C# caches SafeFileHandle and uses
+native positional I/O when available; missing or unsupported bindings switch to safe
+FileStream copies with explicit positions and buffering disabled. I/O/provider exceptions
+inside CopyAt are contained as misses. The fallback is tested by fault injection, not by
+running Unity or IL2CPP.
 
-| Tamanho | Depth | mmap p50 | I/O p50 | I/O p95 |
-|---|---|---:|---:|---:|
-| 1280x720 | não | 0.1393 | 0.2072 | 0.2362 |
-| 1280x720 | sim | 0.4643 | 0.5359 | 0.6361 |
-| 1920x1080 | não | 0.4057 | 0.5659 | 0.6448 |
-| 1920x1080 | sim | 0.9360 | 1.1002 | 1.3439 |
-| 3840x2160 | não | 1.5141 | 2.1923 | 2.4128 |
-| 3840x2160 | sim | 3.9640 | 4.4966 | 4.8842 |
-| 8192x8192 | não | 10.4457 | 17.9088 | 18.3793 |
-| 8192x8192 | sim | 27.8940 | 36.4942 | 36.7107 |
-| 16384x1 | não | 0.0161 | 0.0245 | 0.0300 |
-| 16384x1 | sim | 0.0173 | 0.0294 | 0.0332 |
-| 16384x4096 | não | 9.2363 | 18.0201 | 18.3751 |
-| 16384x4096 | sim | 25.0275 | 36.6500 | 39.2935 |
+Windows keeps a read-only map and the existing atomic lock observations: an active section
+prevents ordinary truncation. Creation also checks that the actual mapping/file extent did
+not shrink before protection took effect. Rust and managed ports read the header using
+bounded I/O before mapping; C rechecks the extent with the section active before touching
+it. Windows was not run or benchmarked. Java mapped-reader cleanup may depend on GC if the
+runtime cannot release its section. Readers are not safe for concurrent close/read; Rust
+serializes scratch and presentation state but callers still own reader lifetime.
 
-Em Windows, o leitor Java tenta liberar o mapa ao fechar pelo Cleaner já usado pelo writer.
-Se a JVM não permitir esse acesso, a liberação depende do GC, podendo atrasar a remoção do arquivo.
-Esse caminho não foi rodado. Mono, Unity e IL2CPP também não foram rodados.
+The revised protocol explicitly distinguishes observation checks from a formal acquire
+load: POSIX does not specify pread as an atomic acquire from the writer's memory. Tests
+reject detected overlapping writes, not every possible publication violation on every
+filesystem. ABA and hostile reuse of lock/frame remain outside that guarantee. I/O can
+block. Writers still assume nobody truncates their own mapping. Linux, Windows, WASI,
+Mono, Unity and IL2CPP have not been run in this task.
+
+## Benchmark method
+
+Synthetic local files, warm cache, two warm-up reads, 30 samples for normal/cropped frames
+and 5 for maximum-sized outputs. Times include header validation, requested planes and final
+identity checks; exclude writer, GPU, IPC and rendering. Rust/C reuse destination buffers;
+C#/Java allocate results according to their public APIs, with GC requested outside timed
+regions. Other processes may compete for CPU and memory. p95 with five samples is only the
+largest observed value. Do not compare allocation policies across languages as if identical.
+
+Measured on macOS arm64. All numbers are milliseconds per frame.
+
+| File | Frame | Depth | Before p50 | After p10 | After p50 | After p95 |
+|---|---|---|---:|---:|---:|---:|
+| 1280x720 | 1280x720 | false | 0.6796 | 0.1911 | 0.1972 | 0.2229 |
+| 1280x720 | 1280x720 | true | 2.0903 | 0.5018 | 0.5207 | 0.5960 |
+| 1920x1080 | 1920x1080 | false | 2.0253 | 0.5125 | 0.5273 | 0.5697 |
+| 1920x1080 | 1920x1080 | true | 3.7480 | 1.0181 | 1.0664 | 1.1962 |
+| 3840x2160 | 3840x2160 | false | 6.2174 | 2.0679 | 2.1026 | 2.2580 |
+| 3840x2160 | 3840x2160 | true | 12.9632 | 4.2317 | 4.2916 | 4.4816 |
+| 8192x8192 | 8192x8192 | false | 62.6748 | 16.9756 | 17.1614 | 17.5032 |
+| 8192x8192 | 8192x8192 | true | 96.4237 | 34.3589 | 34.4319 | 34.7297 |
+| 16384x1 | 16384x1 | false | 0.0970 | 0.0180 | 0.0222 | 0.0290 |
+| 16384x1 | 16384x1 | true | 0.0862 | 0.0243 | 0.0275 | 0.0363 |
+| 16384x4096 | 16384x4096 | false | 67.4528 | 16.8792 | 17.0667 | 17.2972 |
+| 16384x4096 | 16384x4096 | true | 164.6170 | 34.1543 | 34.4221 | 34.6250 |
+| 1920x1080 | 1280x720 | false | 2.8854 | 0.4175 | 0.4606 | 0.5760 |
+| 1920x1080 | 1280x720 | true | 4.5684 | 0.7110 | 0.7516 | 0.8130 |
+| 3840x2160 | 1920x1080 | false | 4.8938 | 0.7951 | 0.8867 | 2.9129 |
+| 3840x2160 | 1920x1080 | true | 9.6532 | 1.6395 | 1.6600 | 1.8350 |
+| 16384x4096 | 8192x4096 | false | 54.1134 | 12.2026 | 12.6744 | 12.8815 |
+| 16384x4096 | 8192x4096 | true | 126.8897 | 21.5987 | 21.7755 | 22.5060 |
+| 16384x4096 | 1x4096 | false | 5.9756 | 1.2792 | 1.3298 | 1.3940 |
+| 16384x4096 | 1x4096 | true | 15.7567 | 2.5230 | 2.6086 | 2.7883 |
+
+## Matched cropped-frame comparison
+
+The same final API was built with grouping disabled and enabled, one language at a time.
+These sequential runs separate the optimization from other reader changes. Scheduling and
+memory pressure still vary. Whole-plane scratch and unrestricted grouping were rejected
+after measurements showed regressions on wide files. A one-column frame remains per-row.
+
+| File | Frame | Depth | Row-wise p10 / p50 / p95 | Bounded p10 / p50 / p95 |
+|---|---|---|---:|---:|
+| 1920x1080 | 1280x720 | false | 0.4412 / 0.4969 / 0.6011 | 0.3262 / 0.3528 / 0.5370 |
+| 1920x1080 | 1280x720 | true | 0.8979 / 0.9333 / 1.0910 | 0.6859 / 0.7143 / 0.8935 |
+| 3840x2160 | 1920x1080 | false | 0.8999 / 0.9293 / 1.0066 | 0.8477 / 0.8956 / 0.9785 |
+| 3840x2160 | 1920x1080 | true | 1.9078 / 1.9717 / 2.4370 | 1.7337 / 1.7903 / 1.9178 |
+| 16384x4096 | 8192x4096 | false | 12.4120 / 12.5790 / 12.7103 | 12.5602 / 12.7270 / 13.0167 |
+| 16384x4096 | 8192x4096 | true | 24.5297 / 24.7050 / 25.3361 | 22.4254 / 22.5095 / 23.0955 |
+| 16384x4096 | 1x4096 | false | 1.2666 / 1.2919 / 1.4300 | 1.2761 / 1.2962 / 1.3807 |
+| 16384x4096 | 1x4096 | true | 2.5199 / 2.5630 / 2.7410 | 2.5160 / 2.5488 / 2.7248 |

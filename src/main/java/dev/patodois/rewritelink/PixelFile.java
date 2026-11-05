@@ -168,7 +168,10 @@ public final class PixelFile {
         private boolean gone;
         private final long mapped; // the file length that was mapped
         private final ByteBuffer map;
-        private final ByteBuffer io; // reusable owned scratch
+        private final ByteBuffer[] vectors=new ByteBuffer[16];
+        private ByteBuffer padding=ByteBuffer.allocateDirect(0),vectorOwner;
+        private int vectorRow=-1,vectorGap=-1;
+        private ByteBuffer io; // reusable owned scratch; never mapped peer memory
         private final LongBuffer locks; // the same mapping as 64-bit words: slot lock i is word (slot start) / 8
         public final int slots, width, height, stride;
         public final long slotSize;
@@ -185,7 +188,7 @@ public final class PixelFile {
             this.mapped = mapped;
             this.map = map;
             this.locks = map == null ? null : map.asLongBuffer();
-            this.io = map == null ? ByteBuffer.allocateDirect(1024 * 1024).order(ByteOrder.LITTLE_ENDIAN) : null;
+            this.io = map == null ? ByteBuffer.allocateDirect(0).order(ByteOrder.LITTLE_ENDIAN) : null;
             this.slots = slots;
             this.width = width;
             this.height = height;
@@ -345,21 +348,52 @@ public final class PixelFile {
             }
             return true;
         }
-
+        private boolean vectorPlane(long at,int stride,int row,int height,byte[] rgba,float[] depth) throws IOException {
+            int gap=stride-row;
+            if(io.capacity()<row*8) io=ByteBuffer.allocateDirect(row*8).order(ByteOrder.LITTLE_ENDIAN);
+            if(padding.capacity()<gap) padding=ByteBuffer.allocateDirect(gap);
+            if(vectorOwner!=io || vectorRow!=row || vectorGap!=gap) {
+                for(int y=0;y<8;y++) {
+                    ByteBuffer data=io.duplicate();data.position(y*row);data.limit((y+1)*row);
+                    vectors[y*2]=data.slice();
+                    ByteBuffer pad=padding.duplicate();pad.limit(gap);vectors[y*2+1]=pad.slice();
+                }
+                vectorOwner=io;vectorRow=row;vectorGap=gap;
+            }
+            for(int start=0;start<height;start+=8) {
+                int rows=Math.min(8,height-start),count=rows*2-1;
+                for(int i=0;i<count;i++) vectors[i].clear();
+                // This channel belongs to a single-threaded reader. Seeking before a scatter
+                // read supplies the bounded file position without mapping peer-owned pages.
+                channel.position(at+(long)start*stride);
+                while(vectors[count-1].hasRemaining()) if(channel.read(vectors,0,count)<=0) return false;
+                io.clear();io.limit(rows*row);
+                if(rgba!=null) io.get(rgba,start*row,rows*row);
+                else io.asFloatBuffer().get(depth,start*row/4,rows*row/4);
+            }
+            return true;
+        }
         private boolean copyPlane(long at, int stride, int row, int height, byte[] rgba, float[] depth) throws IOException {
-            int rows = stride == row ? 1 : height;
-            int bytes = stride == row ? row * height : row;
-            int out = 0;
-            for (int y=0; y<rows; y++) {
-                int done=0;
-                while (done < bytes) {
-                    int n = Math.min(bytes-done, io.capacity());
-                    io.clear(); io.limit(n);
-                    if (!readExact(channel, io, at + (long)y*stride + done)) return false;
-                    io.flip();
-                    if (rgba != null) io.get(rgba, out, n);
-                    else io.asFloatBuffer().get(depth, out/4, n/4);
-                    done += n; out += n;
+            int span = Math.toIntExact((long)(height - 1) * stride + row);
+            if(stride<=16*1024 && stride!=row && height>1 && span<=(long)row*height*4) return vectorPlane(at,stride,row,height,rgba,depth);
+            boolean coalesce = stride == row || (stride <= 16*1024 && span <= (long)row * height * 4);
+            int blockBytes = Math.max(row, stride == row ? 1024 * 1024 : 32 * 1024);
+            int blockRows = coalesce ? Math.min(height, (blockBytes - row) / stride + 1) : 1;
+            int capacity = (blockRows - 1) * stride + row;
+            if (io.capacity() < capacity) io = ByteBuffer.allocateDirect(capacity).order(ByteOrder.LITTLE_ENDIAN);
+            for (int start = 0; start < height; start += blockRows) {
+                int rows = Math.min(blockRows, height - start);
+                int bytes = (rows - 1) * stride + row;
+                io.clear(); io.limit(bytes);
+                if (!readExact(channel, io, at + (long)start * stride)) return false;
+                io.flip();
+                if (stride == row) {
+                    if (rgba != null) io.get(rgba, start * row, bytes);
+                    else io.asFloatBuffer().get(depth, start * row / 4, bytes / 4);
+                } else for (int y = 0; y < rows; y++) {
+                    io.limit(y * stride + row); io.position(y * stride);
+                    if (rgba != null) io.get(rgba, (start+y) * row, row);
+                    else io.asFloatBuffer().get(depth, (start+y) * row / 4, row / 4);
                 }
             }
             return true;
