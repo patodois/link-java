@@ -151,7 +151,7 @@ Revision 4: what the code review of both implementations changed, in the order o
 - **`heartbeat_ms` is 10 to 10000.** A hello outside it fails the handshake; `LinkConfig.heartbeatMs` is
   clamped to the range when the link is built.
 - **`Link.announceFrames(...)`** sends the `frame_channel` line, for a `Control.FrameChannel` or straight
-  from a `PixelFile.Writer`. A new `frame_channel` resets the frame staleness of the receiving link.
+  from a `PixelFile.Writer`. A new `frame_channel` requires the consumer to replace its pixel reader and clear cached pixels. Presentation order belongs to that reader.
 - **`PixelFile.Reader.open`** refuses a relative path, a symlink or anything that is not a regular file,
   `width` or `height` above 16384, a `stride` other than `width * 4`, and sizes that overflow. `read`
   returns null when the file shrinks or a positional copy fails; `isGone()` also reports a detected shrink. Unix readers do not access peer-owned mappings (revision 7).
