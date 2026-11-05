@@ -15,8 +15,8 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.Objects;
 
 /**
- * The shared-memory pixel file of CONTRACT.md section 9.6 (revision 3, with the optional depth
- * plane): a {@link Reader} for the receiving side (maps the file read-only) and a {@link Writer}
+ * The shared-memory pixel file of CONTRACT.md section 9.6 (revision 7, with the optional depth
+ * plane): a {@link Reader} for the receiving side (bounded Unix I/O or a read-only Windows map) and a {@link Writer}
  * for the sending side. Both use the seqlock of the contract: the writer makes the slot's
  * {@code lock} odd while it writes and even afterwards, the reader copies and checks that the lock did
  * not change.
@@ -35,6 +35,8 @@ public final class PixelFile {
 
     // ------------------------------------------------------------------ the seqlock on Java 8
     //
+    // The following applies to writers and Windows mapped readers. Unix readers use bounded
+    // observations, not atomic acquire loads from peer memory (revision 7; see PIXEL-IO.md).
     // CONTRACT 9.6 asks for atomic 64-bit access to `lock` with acquire/release ordering and for
     // release/acquire fences around the slot data. Java 9 has VarHandle for that; this library
     // targets Java 8 (Minecraft 1.7.10 and 1.12.2), where there is no VarHandle, no public fence
@@ -163,9 +165,10 @@ public final class PixelFile {
     public static final class Reader implements AutoCloseable {
         private final FileChannel channel;
         private long newest;
+        private boolean gone;
         private final long mapped; // the file length that was mapped
         private final ByteBuffer map;
-        private final ByteBuffer io; // bounded reusable direct I/O scratch, never peer-owned memory
+        private final ByteBuffer io; // reusable owned scratch
         private final LongBuffer locks; // the same mapping as 64-bit words: slot lock i is word (slot start) / 8
         public final int slots, width, height, stride;
         public final long slotSize;
@@ -174,7 +177,7 @@ public final class PixelFile {
         private final long depthOffset;
 
         // Diagnostics for the tests: why read() returned null. Not synchronized.
-        long skippedBusy, skippedOtherFrame, skippedOverwritten, skippedGone;
+        long skippedBusy, skippedOtherFrame, skippedOverwritten, skippedGone, skippedStale;
 
         private Reader(FileChannel channel, long mapped, ByteBuffer map, int slots, int width, int height, int stride, long slotSize, int depthFormat,
                        int depthStride, long depthOffset) {
@@ -199,6 +202,7 @@ public final class PixelFile {
          * ordinary file truncation. Writers must still obey the contract's lifetime rules.
          */
         public boolean isGone() {
+            if (gone) return true;
             try {
                 return channel.size() < mapped;
             } catch (IOException e) {
@@ -284,11 +288,15 @@ public final class PixelFile {
             }
         }
 
+        /** Number of duplicate/older nonzero presentation reads rejected by this reader. */
+        public long staleReads() { return skippedStale; }
+
         /** Presentation copy: only a valid slot advances order within this file. On every channel
          * replacement open a new reader and invalidate the previous image, even if opening fails.
          * The read overloads remain unordered low-level copies. */
         public Frame readLatest(Wire.FrameReady ready, boolean wantDepth) {
-            if (Long.compareUnsigned(ready.frame(), newest) <= 0) { skippedOtherFrame++; return null; }
+            if (ready == null) return null;
+            if (ready.frame() != 0 && Long.compareUnsigned(ready.frame(), newest) <= 0) { skippedStale++; skippedOtherFrame++; return null; }
             Frame f = read(ready, wantDepth);
             if (f != null) newest = f.frame();
             return f;
@@ -296,10 +304,11 @@ public final class PixelFile {
 
         /**
          * Copies the slot a {@code Frame} datagram announces: {@link #read(long, int, int, int, boolean)} with the
-         * datagram's own {@code frame}, {@code slot}, {@code width} and {@code height}. This is the call a
-         * receiver makes for every {@link LinkEvent.Frame}.
+         * datagram's own {@code frame}, {@code slot}, {@code width} and {@code height}. Use {@link #readLatest(Wire.FrameReady, boolean)} for presentation; this raw copy
+         * permits re-reading and does not enforce presentation order.
          */
         public Frame read(Wire.FrameReady ready, boolean wantDepth) {
+            if (ready == null) return null;
             return read(ready.frame(), ready.slot(), ready.width(), ready.height(), wantDepth);
         }
 
@@ -336,6 +345,7 @@ public final class PixelFile {
             }
             return true;
         }
+
         private boolean copyPlane(long at, int stride, int row, int height, byte[] rgba, float[] depth) throws IOException {
             int rows = stride == row ? 1 : height;
             int bytes = stride == row ? row * height : row;
@@ -358,24 +368,24 @@ public final class PixelFile {
             try {
                 long base = HEADER_LEN + (long)slot * slotSize;
                 ByteBuffer head = ByteBuffer.allocate(SLOT_HEADER_LEN).order(ByteOrder.LITTLE_ENDIAN);
-                if (!readExact(channel, head, base)) { skippedGone++; return null; }
+                if (!readExact(channel, head, base)) { gone = true; skippedGone++; return null; }
                 long l1 = head.getLong(0); fence();
                 if ((l1 & 1) != 0) { skippedBusy++; return null; }
                 long f = head.getLong(8), time = head.getLong(16);
                 int cam = head.getInt(24), w = head.getInt(28), h = head.getInt(32);
                 if (f != frame || w < 1 || h < 1 || w > width || h > height || (dw != 0 && (w != dw || h != dh))) { skippedOtherFrame++; return null; }
                 byte[] rgba = new byte[w*h*4];
-                if (!copyPlane(base + SLOT_HEADER_LEN, stride, w*4, h, rgba, null)) { skippedGone++; return null; }
+                if (!copyPlane(base + SLOT_HEADER_LEN, stride, w*4, h, rgba, null)) { gone = true; skippedGone++; return null; }
                 float[] depth = null;
                 if (wantDepth && hasDepth()) {
                     depth = new float[w*h];
-                    if (!copyPlane(base + depthOffset, depthStride, w*4, h, null, depth)) { skippedGone++; return null; }
+                    if (!copyPlane(base + depthOffset, depthStride, w*4, h, null, depth)) { gone = true; skippedGone++; return null; }
                 }
                 fence(); head.clear(); head.limit(16);
-                if (!readExact(channel, head, base)) { skippedGone++; return null; }
+                if (!readExact(channel, head, base)) { gone = true; skippedGone++; return null; }
                 if (head.getLong(0) != l1 || head.getLong(8) != frame) { skippedOverwritten++; return null; }
                 return new Frame(f, time, cam, w, h, rgba, depth);
-            } catch (IOException e) { skippedGone++; return null; }
+            } catch (IOException e) { gone = true; skippedGone++; return null; }
         }
 
         /** {@code dw} and {@code dh} are the datagram's size, or 0 when the caller has none. */
@@ -386,7 +396,7 @@ public final class PixelFile {
                 return null;
             }
             if (isGone()) {
-                skippedGone++;
+                gone = true; skippedGone++;
                 return null;
             }
             if (map == null) return readFile(frame, slot, dw, dh, wantDepth);
@@ -430,7 +440,8 @@ public final class PixelFile {
         public void close() {
             try {
                 channel.close();
-                if (io != null) unmap(io); // owned scratch only; no peer pages exist on Unix
+                // Owned direct scratch is reclaimed by the JVM. Do not invoke Unsafe or
+                // free a buffer that an in-flight read could still hold.
                 if (map != null) unmap(map); // Windows: release the section when the runtime permits
             } catch (IOException ignored) {
                 // nothing to do

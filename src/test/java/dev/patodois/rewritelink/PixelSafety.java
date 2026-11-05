@@ -13,10 +13,13 @@ public final class PixelSafety {
         final FileChannel ch;
         final Path path;
         boolean armed = true;
+        long planeAt = -1;
+        int reads;
+        boolean onSize = true;
         TruncateAfterSize(FileChannel ch, Path path) { this.ch = ch; this.path = path; }
         @Override public long size() throws IOException {
             long size = ch.size();
-            if (armed) {
+            if (armed && onSize) {
                 armed = false;
                 try (FileChannel writer = FileChannel.open(path, StandardOpenOption.WRITE)) { writer.truncate(0); }
                 System.out.println("truncated after successful size()");
@@ -24,8 +27,19 @@ public final class PixelSafety {
             return size;
         }
         @Override public int read(ByteBuffer b) throws IOException { return ch.read(b); }
-        @Override public int read(ByteBuffer b, long p) throws IOException { return ch.read(b,p); }
-        @Override public long read(ByteBuffer[] b,int o,int l) throws IOException { return ch.read(b,o,l); }
+        @Override public int read(ByteBuffer b, long p) throws IOException {
+            reads++;
+            if (armed && p == planeAt) {
+                armed=false;
+                try(FileChannel w=FileChannel.open(path,StandardOpenOption.WRITE)) { w.truncate(p+64); }
+            }
+            return ch.read(b,p);
+        }
+        @Override public long read(ByteBuffer[] b,int o,int l) throws IOException {
+            reads++;
+            if(armed && ch.position()==planeAt) {armed=false;try(FileChannel w=FileChannel.open(path,StandardOpenOption.WRITE)){w.truncate(planeAt+64);}}
+            return ch.read(b,o,l);
+        }
         @Override public int write(ByteBuffer b) throws IOException { return ch.write(b); }
         @Override public int write(ByteBuffer b,long p) throws IOException { return ch.write(b,p); }
         @Override public long write(ByteBuffer[] b,int o,int l) throws IOException { return ch.write(b,o,l); }
@@ -52,6 +66,7 @@ public final class PixelSafety {
         }
     }
     static void run() {
+        apiTests();
         LinkTests.test("truncation after size cannot terminate the reader", () -> {
             if (System.getProperty("os.name").startsWith("Windows")) { System.out.println("Windows semantics differ; Unix truncation race skipped"); return; }
             String java = Paths.get(System.getProperty("java.home"),"bin","java").toString();
@@ -63,6 +78,58 @@ public final class PixelSafety {
             LinkTests.check(exit == 0, "reader survived the size/access race");
         });
     }
+    static void readerClose() throws Exception {
+        String root = System.getenv("RBL_VECTORS_DIR");
+        Path path = Paths.get(root, "pixelfiles", "colour_4x2_3slots.bin");
+        try (PixelFile.Reader r = PixelFile.Reader.open(path)) {
+            if (r.read(new Wire.FrameReady(1,1,101,4,2),false)==null) throw new AssertionError("fixture read failed");
+        }
+    }
+    static void apiTests() {
+        LinkTests.test("truncation inside either plane cannot produce a frame", () -> {
+            if(System.getProperty("os.name").startsWith("Windows")) return;
+            for(boolean depth:new boolean[]{false,true}) {
+                Path path=Files.createTempDirectory("plane").resolve("f.frames");
+                try(PixelFile.Writer w=new PixelFile.Writer(path,16,8,1,true)) {
+                    w.write(new byte[128],new float[32],8,4,0,1);
+                    try(PixelFile.Reader r=PixelFile.Reader.open(path)) {
+                        Field field=PixelFile.Reader.class.getDeclaredField("channel");field.setAccessible(true);
+                        TruncateAfterSize ch=new TruncateAfterSize((FileChannel)field.get(r),path);
+                        ch.onSize=false;ch.planeAt=depth?640:128;field.set(r,ch);
+                        LinkTests.check(r.read(new Wire.FrameReady(1,0,0,8,4),depth)==null,"partial plane must be rejected: depth="+depth);
+                    }
+                }
+            }
+        });
+        LinkTests.test("reader close on Unix does not invoke Unsafe", () -> {
+            if (System.getProperty("os.name").startsWith("Windows")) return;
+            String java = Paths.get(System.getProperty("java.home"),"bin","java").toString();
+            Process p = new ProcessBuilder(java,"-cp",System.getProperty("java.class.path"),PixelSafety.class.getName(),"reader-close").redirectErrorStream(true).start();
+            StringBuilder out = new StringBuilder();
+            try (BufferedReader r = new BufferedReader(new InputStreamReader(p.getInputStream(),"UTF-8"))) { String line; while((line=r.readLine())!=null) out.append(line).append('\n'); }
+            int exit=p.waitFor();
+            LinkTests.check(exit==0 && out.indexOf("Unsafe")<0,"reader close must be silent: "+out);
+        });
+        LinkTests.test("presentation state belongs to each file and accepts a null announcement as a miss", () -> {
+            Path dir=Files.createTempDirectory("two-files");
+            try(PixelFile.Writer a=new PixelFile.Writer(dir.resolve("a.frames"),2,2,3,false);
+                PixelFile.Writer b=new PixelFile.Writer(dir.resolve("b.frames"),3,2,3,true)) {
+                for(int i=0;i<5;i++) a.write(new byte[16],null,2,2,0,1);
+                b.write(new byte[24],new float[6],3,2,0,1);
+                try(PixelFile.Reader ar=PixelFile.Reader.open(a.path());PixelFile.Reader br=PixelFile.Reader.open(b.path())) {
+                    Wire.FrameReady old=new Wire.FrameReady(5,2,0,2,2), first=new Wire.FrameReady(1,1,0,3,2);
+                    LinkTests.check(ar.readLatest(old,false)!=null,"file A frame 5");
+                    LinkTests.check(br.readLatest(old,true)==null,"old A announcement cannot match B");
+                    PixelFile.Frame got=br.readLatest(first,false);
+                    LinkTests.check(got!=null && got.depth()==null,"new file frame 1 without depth");
+                    LinkTests.check(br.readLatest(first,true)==null && br.staleReads()==1,"duplicate counted");
+                    long before=br.skippedOtherFrame;
+                    LinkTests.check(br.readLatest(null,false)==null && br.read((Wire.FrameReady)null,true)==null && br.skippedOtherFrame==before,"null is a miss without counters");
+                }
+            }
+        });
+    }
+
     static void bench() throws Exception {
         int[][] sizes={{1280,720},{1920,1080},{3840,2160},{8192,8192},{16384,1},{16384,4096}};
         for(int[] size:sizes) for(boolean dep:new boolean[]{false,true}) {
@@ -92,6 +159,8 @@ public final class PixelSafety {
     public static void main(String[] args) throws Exception {
         if(args.length>0 && args[0].equals("child")) child();
         else if(args.length>0 && args[0].equals("bench")) bench();
+        else if(args.length>0 && args[0].equals("reader-close")) readerClose();
+        else if(args.length>0 && args[0].equals("api")) { apiTests(); if(LinkTests.failures()!=0) System.exit(1); }
         else { run(); if (LinkTests.failures() != 0) System.exit(1); }
     }
 }
