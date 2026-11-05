@@ -10,6 +10,19 @@ import static dev.patodois.rewritelink.LinkTests.*;
 final class ControlLimitsTests {
     private static String repeat(char c,int n) {char[] a=new char[n];Arrays.fill(a,c);return new String(a);}
     static void run() {
+        test("lifecycle: a closed guest never reconnects on later polls", () -> {
+            try(java.nio.channels.ServerSocketChannel server=java.nio.channels.ServerSocketChannel.open()) {
+                server.bind(new java.net.InetSocketAddress("127.0.0.1",0));server.configureBlocking(false);
+                LinkConfig cfg=new LinkConfig("guest");cfg.controlPort=((java.net.InetSocketAddress)server.getLocalAddress()).getPort();
+                try(Link guest=Link.guest(cfg)) {
+                    guest.close();guest.close();
+                    for(int i=0;i<10;i++) {check(guest.poll().isEmpty(),"closed poll has no events");Thread.sleep(2);}
+                    try(SocketChannel unexpected=server.accept()) {check(unexpected==null,"poll after close opened a TCP connection");}
+                    check(!guest.isConnected() && guest.udpPort()==0,"closed link remains disconnected");
+                    expectWireError(()->guest.despawn(1),"closed sends are refused");
+                }
+            }
+        });
         test("control limits: UTF-8 bytes including newline bound the queue", () -> {
             Class<?> type=Class.forName(Link.class.getName()+"$Ctl");
             Constructor<?> ctor=type.getDeclaredConstructor(SocketChannel.class);ctor.setAccessible(true);

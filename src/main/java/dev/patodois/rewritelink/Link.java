@@ -370,6 +370,8 @@ public final class Link implements AutoCloseable {
 
     // ---------------------------------------------------------------- construction
 
+    private boolean closed;
+
     private Link(Role role, LinkConfig cfg) throws IOException {
         this.role = role;
         this.cfg = cfg;
@@ -465,6 +467,7 @@ public final class Link implements AutoCloseable {
 
     /** Does one round of work and returns what happened. Call every few milliseconds. */
     public synchronized List<LinkEvent> poll() {
+        if (closed) return java.util.Collections.emptyList();
         long now = now();
         for (Iterator<Closing> it = closing.iterator(); it.hasNext(); ) {
             if (!it.next().pump(now)) it.remove();
@@ -979,6 +982,8 @@ public final class Link implements AutoCloseable {
     /** Says bye and closes gracefully; may block for up to the 200 ms linger. */
     @Override
     public synchronized void close() {
+        if (closed) return;
+        closed = true;
         long now = now();
         Ctl ctl = ctl();
         if (conn instanceof Connecting) {
