@@ -84,6 +84,7 @@ public final class LinkDemo {
                             c.peer().game(), c.peer().protocol(), c.peer().session(), c.peer().udpAddr().getPort()));
                     nextCollision = t;
                 } else if (e instanceof LinkEvent.FrameChannel) {
+                    lastFrame = "none";
                     Control.FrameChannel c = ((LinkEvent.FrameChannel) e).channel();
                     closeQuietly(reader);
                     reader = null;
@@ -96,7 +97,7 @@ public final class LinkDemo {
                     }
                 } else if (e instanceof LinkEvent.Frame) {
                     Wire.FrameReady fr = ((LinkEvent.Frame) e).frame();
-                    PixelFile.Frame f = reader == null ? null : reader.read(fr, true);
+                    PixelFile.Frame f = reader == null ? null : reader.readLatest(fr, true);
                     if (f == null) {
                         framesMissed++;
                     } else {
@@ -104,6 +105,7 @@ public final class LinkDemo {
                         lastFrame = describe(f);
                     }
                 } else if (e instanceof LinkEvent.Lost) {
+                    lastFrame = "none";
                     closeQuietly(reader);
                     reader = null;
                     log("host", "LOST the guest: " + ((LinkEvent.Lost) e).reason());

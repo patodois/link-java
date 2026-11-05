@@ -161,6 +161,7 @@ public final class PixelFile {
     /** Maps a pixel file read-only. Not thread-safe: use one reader per thread. */
     public static final class Reader implements AutoCloseable {
         private final FileChannel channel;
+        private long newest;
         private final long mapped; // the file length that was mapped
         private final ByteBuffer map;
         private final LongBuffer locks; // the same mapping as 64-bit words: slot lock i is word (slot start) / 8
@@ -273,6 +274,16 @@ public final class PixelFile {
                 ch.close();
                 throw e;
             }
+        }
+
+        /** Presentation copy: only a valid slot advances order within this file. On every channel
+         * replacement open a new reader and invalidate the previous image, even if opening fails.
+         * The read overloads remain unordered low-level copies. */
+        public Frame readLatest(Wire.FrameReady ready, boolean wantDepth) {
+            if (Long.compareUnsigned(ready.frame(), newest) <= 0) return null;
+            Frame f = read(ready, wantDepth);
+            if (f != null) newest = f.frame();
+            return f;
         }
 
         /**

@@ -282,6 +282,30 @@ final class ReviewTests {
             }
         });
 
+        test("late old UDP does not poison the new channel", () -> {
+            java.nio.file.Path path = java.nio.file.Files.createTempDirectory("order").resolve("f.frames");
+            try (Pair p = new Pair(); PixelFile.Writer w = new PixelFile.Writer(path, 2, 2, 3, false)) {
+                w.write(new byte[16], null, 2, 2, 0, 1);
+                p.announce(new Control.FrameChannel(path.toString(), 2, 2, 3));
+                try (PixelFile.Reader r = PixelFile.Reader.open(path)) {
+                    List<LinkEvent> events = new ArrayList<>();
+                    Wire.FrameReady old = new Wire.FrameReady(-1L, 1, 0, 2, 2);
+                    p.guest.sendFrame(old);
+                    check(until(1000, () -> { events.addAll(p.host.poll()); p.guest.poll(); return count(events, LinkEvent.Frame.class) == 1; }), "old UDP delivered");
+                    check(r.readLatest(old, false) == null, "old UDP is unreadable");
+                    events.clear();
+                    Wire.FrameReady good = new Wire.FrameReady(1, 1, 0, 2, 2);
+                    p.guest.sendFrame(good);
+                    check(until(1000, () -> { events.addAll(p.host.poll()); p.guest.poll(); return count(events, LinkEvent.Frame.class) == 1; }), "valid frame 1 suppressed by old UDP");
+                    check(r.readLatest(good, false) != null, "new pixels read");
+                    check(r.readLatest(good, false) == null, "duplicate suppressed after valid copy");
+                    w.write(new byte[16], null, 2, 2, 0, 2);
+                    check(r.readLatest(new Wire.FrameReady(2, 2, 0, 2, 2), false) != null, "next frame");
+                    check(r.read(good, false) != null && r.readLatest(good, false) == null, "a valid old slot cannot regress presentation");
+                }
+            }
+        });
+
         // ----- M1 (Java): a new frame_channel restarts the frame numbers
         test("review M1: frames of a new pixel file are not stale", () -> {
             try (Pair p = new Pair()) {
@@ -291,7 +315,7 @@ final class ReviewTests {
                     he.addAll(p.host.poll());
                     p.guest.poll();
                     return count(he, LinkEvent.Frame.class) == 10;
-                }), "10 frames of file 1");
+                }), "10 frames of file 1; got " + count(he, LinkEvent.Frame.class) + "; events " + he + "; received " + p.host.datagramsReceived + "; foreign " + p.host.foreign + "; malformed " + p.host.malformed + "; sent " + p.guest.datagramsSent + "; dropped " + p.guest.sendDropped);
                 he.clear();
                 p.announce(new Control.FrameChannel("/tmp/second.frames", 32, 16, 3));
                 Thread.sleep(30);

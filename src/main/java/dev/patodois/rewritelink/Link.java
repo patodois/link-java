@@ -86,7 +86,6 @@ public final class Link implements AutoCloseable {
     private boolean spawnIgnoredLogged;
     private Integer lastCollision;
     private Assembly assembly;
-    private long lastFrame;
 
     // diagnostics
     public long datagramsSent, datagramsReceived, malformed, stale, foreign, sendDropped,
@@ -643,7 +642,7 @@ public final class Link implements AutoCloseable {
             events.add(new LinkEvent.Focus(in.focus(), requested));
         } else if (msg instanceof Control.FrameChannel) {
             // A new pixel file numbers its frames from 1 again (CONTRACT.md 8).
-            lastFrame = 0;
+
             events.add(new LinkEvent.FrameChannel((Control.FrameChannel) msg));
         }
         // Bye was handled above; an Unknown type is ignored.
@@ -717,7 +716,7 @@ public final class Link implements AutoCloseable {
         collisionQueue.clear();
         lastCollision = null;
         assembly = null;
-        lastFrame = 0;
+
     }
 
     /** Ends the current connection, reporting it as lost (or as a failed handshake). */
@@ -805,11 +804,8 @@ public final class Link implements AutoCloseable {
             onCollision(((Datagram.CollisionMsg) body).chunk());
         } else if (body instanceof Datagram.FrameMsg) {
             Wire.FrameReady f = ((Datagram.FrameMsg) body).frame();
-            if (Long.compareUnsigned(f.frame(), lastFrame) <= 0) {
-                stale++;
-                return;
-            }
-            lastFrame = f.frame();
+            // Slot validation and presentation order belong to the pixel consumer.
+
             events.add(new LinkEvent.Frame(header, f));
         }
         // A Heartbeat or an Unknown kind only counts as the peer being alive (done by the caller).

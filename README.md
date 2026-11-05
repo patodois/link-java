@@ -319,3 +319,12 @@ ported to Java 8 without changing what it does (see "What is in it").
 ## License
 
 MIT OR Apache-2.0, at your option: see `LICENSE-MIT` and `LICENSE-APACHE`.
+
+### Ordem de apresentação de pixels
+
+Os eventos Frame são anúncios ainda não validados. Ao trocar frame_channel ou perder a sessão,
+limpe a imagem anterior e descarte o leitor anterior, inclusive se o novo arquivo não abrir.
+Use a leitura de apresentação read_latest (Rust/C), ReadLatest (C#) ou readLatest (Java):
+só uma cópia válida avança o maior número do arquivo atual. As leituras brutas continuam
+permitindo releituras e não implementam ordem de apresentação. Consumidores assíncronos devem
+associar trabalhos e resultados à instância do leitor e rejeitar resultados de leitores substituídos.
