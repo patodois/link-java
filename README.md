@@ -1,8 +1,6 @@
 # link-java
 
-A pure-Java implementation of the **rewrite-bridge passthrough link protocol v1**, so that a game
-with a Java runtime (a Minecraft mod, a Hytale plugin, a Java server) can be a **host** or a
-**guest** next to any other game or rewrite that speaks it. The protocol is defined by
+link-java implements the **rewrite-bridge passthrough link protocol v1** for **Java game-mod and plugin developers**, enabling a game to act as a host or guest alongside other games. The protocol is defined by
 `docs/CONTRACT.md` in the `rewrite-bridge` repository (revision 7); this library is one
 implementation of it, tested against the Rust reference peers (`fake_host`, `fake_guest`), which come with
 the [`rewrite-bridge`](https://crates.io/crates/rewrite-bridge) crate:
