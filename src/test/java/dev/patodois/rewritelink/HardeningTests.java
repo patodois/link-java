@@ -75,6 +75,63 @@ final class HardeningTests {
 
         interrupts();
 
+        test("config: ports, timeouts and a null game are checked when the link is created", () -> {
+            String[][] bad = {
+                {"controlPort", "70000"}, {"controlPort", "-1"}, {"udpPort", "65536"}, {"udpPort", "-1"},
+                {"timeoutMs", "-1"}, {"timeoutMs", "4294967296"}, {"reconnectMs", "-1"}, {"reconnectMs", "4294967296"},
+                {"game", null},
+            };
+            for (String[] b : bad) {
+                for (boolean host : new boolean[] {true, false}) {
+                    LinkConfig c = new LinkConfig("Config");
+                    c.controlPort = 0;
+                    switch (b[0]) {
+                        case "controlPort": c.controlPort = Integer.parseInt(b[1]); break;
+                        case "udpPort": c.udpPort = Integer.parseInt(b[1]); break;
+                        case "timeoutMs": c.timeoutMs = Long.parseLong(b[1]); break;
+                        case "reconnectMs": c.reconnectMs = Long.parseLong(b[1]); break;
+                        default: c.game = null;
+                    }
+                    boolean refused = false;
+                    try (Link l = host ? Link.host(c) : Link.guest(c)) {
+                        l.poll();
+                    } catch (IllegalArgumentException expected) {
+                        refused = true;
+                    }
+                    check(refused, (host ? "host" : "guest") + " with " + b[0] + " = " + b[1] + " must be refused");
+                }
+            }
+            LinkConfig edge = new LinkConfig("Edge");
+            edge.controlPort = 0;
+            edge.timeoutMs = 4294967295L;
+            edge.reconnectMs = 0;
+            try (Link l = Link.host(edge)) {
+                l.poll();
+            }
+        });
+
+        test("config: changing a LinkConfig after creating the link changes nothing", () -> {
+            LinkConfig hc = new LinkConfig("Host Game");
+            hc.controlPort = 0;
+            try (Link host = Link.host(hc)) {
+                hc.game = "Changed Host";
+                LinkConfig gc = new LinkConfig("Guest Game");
+                gc.controlPort = host.controlPort();
+                try (Link guest = Link.guest(gc)) {
+                    gc.controlPort = 1;
+                    gc.game = null;
+                    gc.reconnectMs = 1_000_000;
+                    check(until(3000, () -> {
+                        host.poll();
+                        guest.poll();
+                        return host.isConnected() && guest.isConnected();
+                    }), "the guest connects to the port it was created with");
+                    eq(host.peer().game(), "Guest Game", "the guest's game");
+                    eq(guest.peer().game(), "Host Game", "the host's game");
+                }
+            }
+        });
+
         test("LinkRunner: a listener that throws on one event still gets the others of the poll, and the tick runs", () -> {
             LinkConfig hc = new LinkConfig("Runner Host");
             hc.controlPort = 0;

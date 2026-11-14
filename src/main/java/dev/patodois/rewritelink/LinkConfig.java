@@ -2,19 +2,23 @@ package dev.patodois.rewritelink;
 
 import java.nio.file.Path;
 
-/** Settings for {@link Link#host} and {@link Link#guest}. Everything is loopback only. */
+/**
+ * Settings for {@link Link#host} and {@link Link#guest}. Everything is loopback only. Creating a link checks the settings
+ * (an {@link IllegalArgumentException} names the one out of range) and copies them: changing this object afterwards does
+ * not affect a link already created.
+ */
 public final class LinkConfig {
-    /** This side's game, sent in {@code hello}. */
+    /** This side's game, sent in {@code hello}; not null. */
     public String game;
-    /** Host: TCP port to listen on (0 = any free port). Guest: the host's port to connect to. */
+    /** Host: TCP port to listen on (0 = any free port). Guest: the host's port to connect to. 0 to 65535. */
     public int controlPort = Wire.DEFAULT_CONTROL_PORT;
-    /** This side's UDP port (0 = any free port); announced in {@code hello}. */
+    /** This side's UDP port (0 = any free port); announced in {@code hello}. 0 to 65535. */
     public int udpPort = 0;
     /** Heartbeat period; a hello carries it, and a peer accepts 10 to 10000 only, so the link clamps it to that range. */
     public long heartbeatMs = 250;
-    /** Watchdog timeout; the effective one is at least four peer heartbeats. */
+    /** Watchdog timeout, 0 to 4294967295 (a {@code hello} carries it); the effective one is at least four peer heartbeats. */
     public long timeoutMs = 2000;
-    /** Guest: how often to retry connecting while no host answers. */
+    /** Guest: how often to retry connecting while no host answers, 0 to 4294967295. */
     public long reconnectMs = 500;
 
     /**

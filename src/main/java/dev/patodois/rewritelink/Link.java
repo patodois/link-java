@@ -57,7 +57,11 @@ public final class Link implements AutoCloseable {
     }
 
     private final Role role;
-    private final LinkConfig cfg;
+    /** The settings of {@link LinkConfig}, copied when the link is created: later changes to it change nothing. */
+    private final String game;
+    private final int configuredPort;
+    private final long timeoutMs;
+    private final long reconnectMs;
     private final ServerSocketChannel listener; // host only
     private final DatagramChannel udp;
     private final SecureRandom random = new SecureRandom();
@@ -383,7 +387,15 @@ public final class Link implements AutoCloseable {
 
     private Link(Role role, LinkConfig cfg) throws IOException {
         this.role = role;
-        this.cfg = cfg;
+        if (cfg.game == null) throw new IllegalArgumentException("game must not be null");
+        requireRange("controlPort", cfg.controlPort, 0, 65535);
+        requireRange("udpPort", cfg.udpPort, 0, 65535);
+        requireRange("timeoutMs", cfg.timeoutMs, 0, 0xFFFFFFFFL); // a hello carries it as a u32
+        requireRange("reconnectMs", cfg.reconnectMs, 0, 0xFFFFFFFFL);
+        this.game = cfg.game;
+        this.configuredPort = cfg.controlPort;
+        this.timeoutMs = cfg.timeoutMs;
+        this.reconnectMs = cfg.reconnectMs;
         this.heartbeatMs = Math.max(Wire.MIN_HEARTBEAT_MS, Math.min(Wire.MAX_HEARTBEAT_MS, cfg.heartbeatMs));
         if (cfg.token != null) Tokens.requireUsable(cfg.token);
         // A host with an endpoint file but no token makes its own, 64 hex digits, new each time it starts.
@@ -391,6 +403,8 @@ public final class Link implements AutoCloseable {
         this.tokenBytes = token == null ? null : token.getBytes(StandardCharsets.UTF_8);
         this.endpointFile = cfg.endpointFile;
         long now = now();
+        InetSocketAddress udpAddr = new InetSocketAddress(LOOPBACK, cfg.udpPort);
+        InetSocketAddress controlAddr = new InetSocketAddress(LOOPBACK, cfg.controlPort);
         ServerSocketChannel l = null;
         DatagramChannel u = null;
         try {
@@ -401,11 +415,11 @@ public final class Link implements AutoCloseable {
             } catch (IOException | RuntimeException ignored) {
                 // best effort
             }
-            u.bind(new InetSocketAddress(LOOPBACK, cfg.udpPort));
+            u.bind(udpAddr);
             u.configureBlocking(false);
             if (role == Role.HOST) {
                 l = ServerSocketChannel.open();
-                l.bind(new InetSocketAddress(LOOPBACK, cfg.controlPort));
+                l.bind(controlAddr);
                 l.configureBlocking(false);
             }
             if (role == Role.HOST && endpointFile != null) {
@@ -424,12 +438,27 @@ public final class Link implements AutoCloseable {
         this.seq = 0;
     }
 
-    /** Listens for one guest on 127.0.0.1:{@code cfg.controlPort}. */
+    private static void requireRange(String name, long value, long min, long max) {
+        if (value < min || value > max) throw new IllegalArgumentException(name + " must be " + min + " to " + max + ", not " + value);
+    }
+
+    /**
+     * Listens for one guest on 127.0.0.1:{@code cfg.controlPort}. The settings are checked and copied: later changes to
+     * {@code cfg} do not affect the link.
+     *
+     * @throws IllegalArgumentException if {@code game} is null, a port is outside 0 to 65535, {@code timeoutMs} or
+     *         {@code reconnectMs} outside 0 to 4294967295, or the token unusable (see {@link LinkConfig#token})
+     */
     public static Link host(LinkConfig cfg) throws IOException {
         return new Link(Role.HOST, cfg);
     }
 
-    /** Connects to a host on 127.0.0.1:{@code cfg.controlPort}, retrying until one answers. */
+    /**
+     * Connects to a host on 127.0.0.1:{@code cfg.controlPort}, retrying until one answers. The settings are checked and
+     * copied as for {@link #host}.
+     *
+     * @throws IllegalArgumentException as for {@link #host}
+     */
     public static Link guest(LinkConfig cfg) throws IOException {
         return new Link(Role.GUEST, cfg);
     }
@@ -445,9 +474,9 @@ public final class Link implements AutoCloseable {
     /** Host: the control port actually bound. */
     public synchronized int controlPort() {
         try {
-            return listener == null ? cfg.controlPort : ((InetSocketAddress) listener.getLocalAddress()).getPort();
+            return listener == null ? configuredPort : ((InetSocketAddress) listener.getLocalAddress()).getPort();
         } catch (IOException e) {
-            return cfg.controlPort;
+            return configuredPort;
         }
     }
 
@@ -498,8 +527,8 @@ public final class Link implements AutoCloseable {
 
     /** Only a guest's hello carries a token (CONTRACT.md 6.2). */
     private Control.Hello hello(int protocol, Long session, String guestToken) {
-        return new Control.Hello(role, cfg.game, protocol, Wire.MIN_PROTOCOL_VERSION, udpPort(),
-                heartbeatMs, cfg.timeoutMs, session, role == Role.GUEST ? guestToken : null);
+        return new Control.Hello(role, game, protocol, Wire.MIN_PROTOCOL_VERSION, udpPort(),
+                heartbeatMs, timeoutMs, session, role == Role.GUEST ? guestToken : null);
     }
 
     private void pollConnect(long now) {
@@ -534,7 +563,7 @@ public final class Link implements AutoCloseable {
             return;
         }
         if (conn instanceof Idle && now >= ((Idle) conn).nextTry()) {
-            int port = cfg.controlPort;
+            int port = configuredPort;
             String attemptToken = token;
             if (endpointFile != null) {
                 // Read before every attempt: the host may have restarted with another port and token. No file, or a
@@ -544,17 +573,18 @@ public final class Link implements AutoCloseable {
                     port = ep.controlPort();
                     attemptToken = ep.token();
                 } catch (IOException | RuntimeException e) {
-                    conn = new Idle(now + cfg.reconnectMs);
+                    conn = new Idle(now + reconnectMs);
                     return;
                 }
             }
+            InetSocketAddress addr = new InetSocketAddress(LOOPBACK, port); // before the channel, which it cannot leak
             try {
                 SocketChannel ch = SocketChannel.open();
                 ch.configureBlocking(false);
-                ch.connect(new InetSocketAddress(LOOPBACK, port));
+                ch.connect(addr);
                 conn = new Connecting(ch, now, attemptToken);
             } catch (IOException e) {
-                conn = new Idle(now + cfg.reconnectMs);
+                conn = new Idle(now + reconnectMs);
             }
         } else if (conn instanceof Connecting) {
             Connecting c = (Connecting) conn;
@@ -564,7 +594,7 @@ public final class Link implements AutoCloseable {
                     if(!ctl.queue(hello(Wire.PROTOCOL_VERSION, null, c.token()))) {
                         lastError="local hello control line too long";
                         events.add(new LinkEvent.HandshakeFailed(lastError));
-                        ctl.closeQuietly();conn=new Idle(now+cfg.reconnectMs);return;
+                        ctl.closeQuietly();conn=new Idle(now+reconnectMs);return;
                     }
                     lastError=null;
                     linesSent++;
@@ -585,7 +615,7 @@ public final class Link implements AutoCloseable {
         } catch (IOException ignored) {
             // nothing to do
         }
-        conn = new Idle(now + cfg.reconnectMs);
+        conn = new Idle(now + reconnectMs);
     }
 
     /** Closes a control connection gracefully, after an optional bye. */
@@ -713,9 +743,9 @@ public final class Link implements AutoCloseable {
             protocol = h.protocol();
             session = h.session();
         }
-        long timeoutMs = Math.max(cfg.timeoutMs, 4 * h.heartbeatMs());
+        long watchdogMs = Math.max(timeoutMs, 4 * h.heartbeatMs());
         PeerInfo peer = new PeerInfo(h.game(), h.role(), protocol, (int) session,
-                new InetSocketAddress(LOOPBACK, h.udpPort()), h.heartbeatMs(), timeoutMs);
+                new InetSocketAddress(LOOPBACK, h.udpPort()), h.heartbeatMs(), watchdogMs);
         Ctl ctl = ((Handshake) conn).ctl();
         if (role == Role.HOST) {
             if(!ctl.queue(hello(protocol, session, null))) {
@@ -726,7 +756,7 @@ public final class Link implements AutoCloseable {
             ctl.flush();
         }
         resetSession();
-        conn = new Live(ctl, peer, timeoutMs, now);
+        conn = new Live(ctl, peer, watchdogMs, now);
         lastError=null;
         lastBeat = now;
         events.add(new LinkEvent.Connected(peer));
@@ -754,7 +784,7 @@ public final class Link implements AutoCloseable {
         long now = now();
         boolean wasLive = conn instanceof Live;
         Ctl ctl = ctl();
-        conn = new Idle(role == Role.GUEST ? now + cfg.reconnectMs : now);
+        conn = new Idle(role == Role.GUEST ? now + reconnectMs : now);
         if (ctl != null) retire(ctl, bye ? reason : null, now);
         resetSession();
         events.add(wasLive ? new LinkEvent.Lost(reason) : new LinkEvent.HandshakeFailed(reason));
@@ -875,7 +905,7 @@ public final class Link implements AutoCloseable {
     }
 
     private void pollTimers(long now) {
-        if (conn instanceof Handshake && now - ((Handshake) conn).since() > cfg.timeoutMs) {
+        if (conn instanceof Handshake && now - ((Handshake) conn).since() > timeoutMs) {
             end("no hello before the timeout", true);
         } else if (conn instanceof Live) {
             Live l = (Live) conn;
