@@ -1042,12 +1042,15 @@ public final class Link implements AutoCloseable {
         }
     }
 
-    /** Ends the session with a bye (the caller knows; no Lost event is reported for it). */
+    /**
+     * Ends the session with a bye (the caller knows; no Lost event is reported for it). A null {@code reason} sends
+     * the empty reason: every close says bye (CONTRACT.md 6.1).
+     */
     public synchronized void disconnect(String reason) {
         if (ctl() != null) {
             boolean interrupted = Thread.interrupted(); // see the class comment
             try {
-                end(reason, true);
+                end(reason == null ? "" : reason, true);
             } finally {
                 if (interrupted) Thread.currentThread().interrupt();
             }

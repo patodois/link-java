@@ -75,6 +75,19 @@ final class HardeningTests {
 
         interrupts();
 
+        test("disconnect(null) says bye with an empty reason", () -> {
+            try (ReviewTests.Pair p = new ReviewTests.Pair()) {
+                p.guest.disconnect(null);
+                String[] lost = {null};
+                check(until(3000, () -> {
+                    p.guest.poll();
+                    for (LinkEvent e : p.host.poll()) if (e instanceof LinkEvent.Lost) lost[0] = ((LinkEvent.Lost) e).reason();
+                    return lost[0] != null;
+                }), "the host sees the end");
+                eq(lost[0], "peer said bye: ", "the host's reason");
+            }
+        });
+
         test("config: ports, timeouts and a null game are checked when the link is created", () -> {
             String[][] bad = {
                 {"controlPort", "70000"}, {"controlPort", "-1"}, {"udpPort", "65536"}, {"udpPort", "-1"},
