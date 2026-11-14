@@ -5,6 +5,7 @@ import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.net.StandardSocketOptions;
 import java.nio.ByteBuffer;
+import java.nio.channels.ClosedChannelException;
 import java.nio.channels.DatagramChannel;
 import java.nio.channels.ServerSocketChannel;
 import java.nio.channels.SocketChannel;
@@ -33,6 +34,10 @@ import dev.patodois.rewritelink.Wire.WireException;
  * game thread may send while a helper thread polls (see {@link LinkRunner}).
  *
  * <p>Everything binds and connects to 127.0.0.1 only.
+ *
+ * <p>A pending interrupt of the calling thread is not an error: on Java 8 every NIO channel operation, a non-blocking
+ * one too, closes the channel when the thread's interrupt status is set, so {@link #poll()}, the send methods,
+ * {@link #disconnect} and {@link #close()} clear the status while they work and set it again before they return.
  */
 public final class Link implements AutoCloseable {
     private static final long CONNECT_TIMEOUT_MS = 1000;
@@ -472,18 +477,23 @@ public final class Link implements AutoCloseable {
     /** Does one round of work and returns what happened. Call every few milliseconds. */
     public synchronized List<LinkEvent> poll() {
         if (closed) return java.util.Collections.emptyList();
-        long now = now();
-        for (Iterator<Closing> it = closing.iterator(); it.hasNext(); ) {
-            if (!it.next().pump(now)) it.remove();
+        boolean interrupted = Thread.interrupted(); // see the class comment
+        try {
+            long now = now();
+            for (Iterator<Closing> it = closing.iterator(); it.hasNext(); ) {
+                if (!it.next().pump(now)) it.remove();
+            }
+            pollConnect(now);
+            pollControl(now);
+            pollUdp(now);
+            pumpCollision();
+            pollTimers(now);
+            List<LinkEvent> out = new ArrayList<>(events);
+            events.clear();
+            return out;
+        } finally {
+            if (interrupted) Thread.currentThread().interrupt();
         }
-        pollConnect(now);
-        pollControl(now);
-        pollUdp(now);
-        pumpCollision();
-        pollTimers(now);
-        List<LinkEvent> out = new ArrayList<>(events);
-        events.clear();
-        return out;
     }
 
     /** Only a guest's hello carries a token (CONTRACT.md 6.2). */
@@ -499,6 +509,9 @@ public final class Link implements AutoCloseable {
                 SocketChannel ch;
                 try {
                     ch = listener.accept();
+                } catch (ClosedChannelException e) {
+                    lastError = "the control listener is closed";
+                    break;
                 } catch (IOException e) {
                     break;
                 }
@@ -753,6 +766,9 @@ public final class Link implements AutoCloseable {
             try {
                 rx.clear();
                 from = (InetSocketAddress) udp.receive(rx);
+            } catch (ClosedChannelException e) {
+                lastError = "the UDP channel is closed";
+                break;
             } catch (IOException e) {
                 continue; // e.g. ICMP port-unreachable from an earlier send
             }
@@ -888,11 +904,17 @@ public final class Link implements AutoCloseable {
         Header h = new Header(live.peer.protocol(), 0, live.peer.session(), seq, Wire.nowUs());
         byte[] bytes = Wire.encode(h, body);
         seq++;
+        boolean interrupted = Thread.interrupted(); // see the class comment
         try {
             if (udp.send(ByteBuffer.wrap(bytes), live.peer.udpAddr()) > 0) datagramsSent++;
             else sendDropped++;
+        } catch (ClosedChannelException e) {
+            sendDropped++;
+            lastError = "the UDP channel is closed";
         } catch (IOException e) {
             sendDropped++; // refused or would block: the next tick replaces it
+        } finally {
+            if (interrupted) Thread.currentThread().interrupt();
         }
         return h.seq();
     }
@@ -977,7 +999,13 @@ public final class Link implements AutoCloseable {
         Live live = (Live) conn;
         if (!live.ctl.queue(c)) throw new WireException("control line too long");
         linesSent++;
-        String err = live.ctl.flush();
+        boolean interrupted = Thread.interrupted(); // see the class comment
+        String err;
+        try {
+            err = live.ctl.flush();
+        } finally {
+            if (interrupted) Thread.currentThread().interrupt();
+        }
         if (err != null) {
             end(err, false);
             throw new WireException("not connected");
@@ -987,7 +1015,12 @@ public final class Link implements AutoCloseable {
     /** Ends the session with a bye (the caller knows; no Lost event is reported for it). */
     public synchronized void disconnect(String reason) {
         if (ctl() != null) {
-            end(reason, true);
+            boolean interrupted = Thread.interrupted(); // see the class comment
+            try {
+                end(reason, true);
+            } finally {
+                if (interrupted) Thread.currentThread().interrupt();
+            }
             if (!events.isEmpty()) events.remove(events.size() - 1);
         }
     }
@@ -997,6 +1030,15 @@ public final class Link implements AutoCloseable {
     public synchronized void close() {
         if (closed) return;
         closed = true;
+        boolean interrupted = Thread.interrupted(); // see the class comment
+        try {
+            closeChannels();
+        } finally {
+            if (interrupted) Thread.currentThread().interrupt();
+        }
+    }
+
+    private void closeChannels() {
         long now = now();
         Ctl ctl = ctl();
         if (conn instanceof Connecting) {

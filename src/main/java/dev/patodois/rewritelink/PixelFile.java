@@ -206,10 +206,13 @@ public final class PixelFile {
          */
         public boolean isGone() {
             if (gone) return true;
+            boolean interrupted = Thread.interrupted(); // see readSlot
             try {
                 return channel.size() < mapped;
             } catch (IOException e) {
                 return true;
+            } finally {
+                if (interrupted) Thread.currentThread().interrupt();
             }
         }
 
@@ -429,11 +432,18 @@ public final class PixelFile {
                 skippedOtherFrame++;
                 return null;
             }
-            if (isGone()) {
-                gone = true; skippedGone++;
-                return null;
+            // A FileChannel closes itself when an operation starts with the thread's interrupt status set, and a closed
+            // channel would make this reader gone for good: the status is cleared while the file is read and set again.
+            boolean interrupted = Thread.interrupted();
+            try {
+                if (isGone()) {
+                    gone = true; skippedGone++;
+                    return null;
+                }
+                if (map == null) return readFile(frame, slot, dw, dh, wantDepth);
+            } finally {
+                if (interrupted) Thread.currentThread().interrupt();
             }
-            if (map == null) return readFile(frame, slot, dw, dh, wantDepth);
             int base = (int) (HEADER_LEN + (long) slot * slotSize);
             long l1 = locks.get(base >> 3); // step 1: l1 = lock, then the acquire (see "the seqlock on Java 8")
             fence();
