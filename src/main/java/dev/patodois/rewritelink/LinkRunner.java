@@ -1,11 +1,17 @@
 package dev.patodois.rewritelink;
 
+import java.util.Collections;
+import java.util.List;
 import java.util.function.Consumer;
 
 /**
  * Drives a {@link Link} from a daemon thread: polls it every few milliseconds, hands each event
  * to a listener and calls an optional per-tick callback (for heartbeats of game state, such as
  * publishing a camera). The listener and the tick run on the runner thread.
+ *
+ * <p>A {@link RuntimeException} thrown by the listener or the tick is printed to {@code System.err}
+ * and does not stop the thread: a listener that throws on one event still receives every other
+ * event of the same poll (the link does not keep them), and the tick still runs in that round.
  */
 public final class LinkRunner implements AutoCloseable {
     private final Link link;
@@ -34,12 +40,27 @@ public final class LinkRunner implements AutoCloseable {
 
     private void loop() {
         while (!stop) {
+            // A broken listener or tick must not kill the link thread, nor cost the other events of the poll.
+            List<LinkEvent> events;
             try {
-                for (LinkEvent e : link.poll()) listener.accept(e);
-                if (tick != null) tick.run();
+                events = link.poll();
             } catch (RuntimeException e) {
-                // A broken listener must not kill the link thread.
                 e.printStackTrace();
+                events = Collections.emptyList();
+            }
+            for (LinkEvent e : events) {
+                try {
+                    listener.accept(e);
+                } catch (RuntimeException failure) {
+                    failure.printStackTrace();
+                }
+            }
+            if (tick != null) {
+                try {
+                    tick.run();
+                } catch (RuntimeException failure) {
+                    failure.printStackTrace();
+                }
             }
             try {
                 Thread.sleep(periodMs);

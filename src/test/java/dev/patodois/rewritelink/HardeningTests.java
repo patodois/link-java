@@ -74,6 +74,37 @@ final class HardeningTests {
         });
 
         interrupts();
+
+        test("LinkRunner: a listener that throws on one event still gets the others of the poll, and the tick runs", () -> {
+            LinkConfig hc = new LinkConfig("Runner Host");
+            hc.controlPort = 0;
+            try (Link host = Link.host(hc);
+                 java.net.Socket guest = new java.net.Socket(java.net.InetAddress.getByName("127.0.0.1"), host.controlPort())) {
+                // The hello and five spawns in one write, so that one poll reads them all.
+                StringBuilder lines = new StringBuilder("{\"type\":\"hello\",\"role\":\"guest\",\"game\":\"g\",\"protocol\":1,"
+                        + "\"min_protocol\":1,\"udp_port\":9,\"heartbeat_ms\":250,\"timeout_ms\":4000}\n");
+                for (int id = 1; id <= 5; id++) {
+                    lines.append("{\"type\":\"spawn\",\"entity\":").append(id).append(",\"provider\":\"t\",\"asset\":\"a\"}\n");
+                }
+                guest.getOutputStream().write(lines.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8));
+                guest.getOutputStream().flush();
+                Thread.sleep(100);
+                List<String> seen = Collections.synchronizedList(new ArrayList<>());
+                // A long period: the first round is the only one the test waits for.
+                try (LinkRunner runner = new LinkRunner(host, e -> {
+                    if (!(e instanceof LinkEvent.Spawn)) return;
+                    long id = ((LinkEvent.Spawn) e).spawn().entity();
+                    if (id == 2) throw new IllegalStateException("a listener bug (expected by the test)");
+                    seen.add(Long.toString(id));
+                }, () -> seen.add("tick"), 5000)) {
+                    runner.start();
+                    check(until(2000, () -> seen.contains("tick")), "the tick ran in the first round: " + seen);
+                    synchronized (seen) {
+                        eq(new ArrayList<>(seen), java.util.Arrays.asList("1", "3", "4", "5", "tick"), "events and tick of the first round");
+                    }
+                }
+            }
+        });
     }
 
     static Path tempDir(String prefix) throws Exception {
