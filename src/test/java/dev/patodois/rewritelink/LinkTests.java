@@ -767,6 +767,7 @@ public final class LinkTests {
         PixelSafety.run();
         TokenTests.run();
         FuzzFindingTests.run();
+        HardeningTests.run();
         VectorTests.run();
 
         System.out.println();

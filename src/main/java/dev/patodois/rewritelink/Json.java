@@ -143,6 +143,11 @@ final class Json {
                 try {
                     return Long.parseLong(t);
                 } catch (NumberFormatException e) {
+                    // Double.MAX_VALUE has 309 digits and an integer literal has no leading zeros, so one with more digits
+                    // is out of range whatever they are. Checked from the length: building a BigInteger is quadratic in
+                    // the digits, and a line can hold 65535 of them.
+                    int digits = t.charAt(0) == '-' ? t.length() - 1 : t.length();
+                    if (digits > 309) throw new JsonException("number out of range");
                     java.math.BigInteger big = new java.math.BigInteger(t);
                     if (Double.isInfinite(big.doubleValue())) throw new JsonException("number out of range");
                     return big;
