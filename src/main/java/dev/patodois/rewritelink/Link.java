@@ -114,59 +114,35 @@ public final class Link implements AutoCloseable {
 
     /** No connection. A guest retries at {@code nextTry}; a host waits. */
     private static final class Idle implements Conn {
-        private final long nextTry;
+        final long nextTry;
 
         Idle(long nextTry) {
             this.nextTry = nextTry;
-        }
-
-        public long nextTry() {
-            return nextTry;
         }
     }
 
     /** Guest: a non-blocking connect is in flight. */
     private static final class Connecting implements Conn {
-        private final SocketChannel ch;
-        private final long since;
+        final SocketChannel ch;
+        final long since;
         /** The token this attempt sends (from the endpoint file, if there is one), or null. */
-        private final String token;
+        final String token;
 
         Connecting(SocketChannel ch, long since, String token) {
             this.ch = ch;
             this.since = since;
             this.token = token;
         }
-
-        String token() {
-            return token;
-        }
-
-        public SocketChannel ch() {
-            return ch;
-        }
-
-        public long since() {
-            return since;
-        }
     }
 
     /** Connected, waiting for the peer's hello. */
     private static final class Handshake implements Conn {
-        private final Ctl ctl;
-        private final long since;
+        final Ctl ctl;
+        final long since;
 
         Handshake(Ctl ctl, long since) {
             this.ctl = ctl;
             this.since = since;
-        }
-
-        public Ctl ctl() {
-            return ctl;
-        }
-
-        public long since() {
-            return since;
         }
     }
 
@@ -569,7 +545,7 @@ public final class Link implements AutoCloseable {
             for (Ctl c : busy) retire(c, "busy", now);
             return;
         }
-        if (conn instanceof Idle && now >= ((Idle) conn).nextTry()) {
+        if (conn instanceof Idle && now >= ((Idle) conn).nextTry) {
             int port = configuredPort;
             String attemptToken = token;
             if (endpointFile != null) {
@@ -597,9 +573,9 @@ public final class Link implements AutoCloseable {
         } else if (conn instanceof Connecting) {
             Connecting c = (Connecting) conn;
             try {
-                if (c.ch().finishConnect()) {
-                    Ctl ctl = new Ctl(c.ch());
-                    if(!ctl.queue(hello(Wire.PROTOCOL_VERSION, null, c.token()))) {
+                if (c.ch.finishConnect()) {
+                    Ctl ctl = new Ctl(c.ch);
+                    if(!ctl.queue(hello(Wire.PROTOCOL_VERSION, null, c.token))) {
                         lastError="local hello control line too long";
                         events.add(new LinkEvent.HandshakeFailed(lastError));
                         ctl.closeQuietly();conn=new Idle(now+reconnectMs);return;
@@ -608,7 +584,7 @@ public final class Link implements AutoCloseable {
                     linesSent++;
                     ctl.flush();
                     conn = new Handshake(ctl, now);
-                } else if (now - c.since() > CONNECT_TIMEOUT_MS) {
+                } else if (now - c.since > CONNECT_TIMEOUT_MS) {
                     abortConnect(c, now);
                 }
             } catch (IOException e) {
@@ -630,7 +606,7 @@ public final class Link implements AutoCloseable {
 
     private void abortConnect(Connecting c, long now) {
         try {
-            c.ch().close();
+            c.ch.close();
         } catch (IOException ignored) {
             // nothing to do
         }
@@ -648,7 +624,7 @@ public final class Link implements AutoCloseable {
     }
 
     private Ctl ctl() {
-        if (conn instanceof Handshake) return ((Handshake) conn).ctl();
+        if (conn instanceof Handshake) return ((Handshake) conn).ctl;
         if (conn instanceof Live) return ((Live) conn).ctl;
         return null;
     }
@@ -765,7 +741,7 @@ public final class Link implements AutoCloseable {
         long watchdogMs = Math.max(timeoutMs, 4 * h.heartbeatMs());
         PeerInfo peer = new PeerInfo(h.game(), h.role(), protocol, (int) session,
                 new InetSocketAddress(LOOPBACK, h.udpPort()), h.heartbeatMs(), watchdogMs);
-        Ctl ctl = ((Handshake) conn).ctl();
+        Ctl ctl = ((Handshake) conn).ctl;
         if (role == Role.HOST) {
             if(!ctl.queue(hello(protocol, session, null))) {
                 lastError="local hello control line too long";
@@ -924,7 +900,7 @@ public final class Link implements AutoCloseable {
     }
 
     private void pollTimers(long now) {
-        if (conn instanceof Handshake && now - ((Handshake) conn).since() > timeoutMs) {
+        if (conn instanceof Handshake && now - ((Handshake) conn).since > timeoutMs) {
             end("no hello before the timeout", true);
         } else if (conn instanceof Live) {
             Live l = (Live) conn;
@@ -1120,7 +1096,7 @@ public final class Link implements AutoCloseable {
         Ctl ctl = ctl();
         if (conn instanceof Connecting) {
             try {
-                ((Connecting) conn).ch().close();
+                ((Connecting) conn).ch.close();
             } catch (IOException ignored) {
                 // nothing to do
             }
