@@ -111,6 +111,57 @@ final class HardeningTests {
             }
         });
 
+        test("pixel file: a file replaced between the check and the open is refused", () -> {
+            if (System.getProperty("os.name", "").startsWith("Windows")) return; // symbolic links need a privilege there
+            Path dir = tempDir("swap");
+            Path path = dir.resolve("f.frames"), other = dir.resolve("other.frames"), link = dir.resolve("link.frames");
+            try (PixelFile.Writer a = new PixelFile.Writer(path, 4, 2, 3, false);
+                 PixelFile.Writer b = new PixelFile.Writer(other, 4, 2, 3, false)) {
+                a.write(new byte[32], null, 4, 2, 0, 1);
+                b.write(new byte[32], null, 4, 2, 0, 1);
+                // A symbolic link swapped in after the type check: the open must not follow it.
+                Files.createSymbolicLink(link, other);
+                boolean refused = false;
+                try (PixelFile.Reader r = PixelFile.Reader.open(path, () -> {
+                    try {
+                        Files.move(link, path, java.nio.file.StandardCopyOption.REPLACE_EXISTING, java.nio.file.StandardCopyOption.ATOMIC_MOVE);
+                    } catch (java.io.IOException e) {
+                        throw new java.io.UncheckedIOException(e);
+                    }
+                })) {
+                    check(r == null, "unreachable");
+                } catch (java.io.IOException expected) {
+                    refused = true;
+                }
+                check(refused, "a symlink swapped in before the open is refused");
+            }
+            try (PixelFile.Writer a = new PixelFile.Writer(path, 4, 2, 3, false);
+                 PixelFile.Writer b = new PixelFile.Writer(other, 4, 2, 3, false)) {
+                a.write(new byte[32], null, 4, 2, 0, 1);
+                b.write(new byte[32], null, 4, 2, 0, 1);
+                // Another regular file renamed over the checked one: a different file key.
+                boolean refused = false;
+                try (PixelFile.Reader r = PixelFile.Reader.open(path, () -> {
+                    try {
+                        Files.move(other, path, java.nio.file.StandardCopyOption.REPLACE_EXISTING, java.nio.file.StandardCopyOption.ATOMIC_MOVE);
+                    } catch (java.io.IOException e) {
+                        throw new java.io.UncheckedIOException(e);
+                    }
+                })) {
+                    check(r == null, "unreachable");
+                } catch (PixelFile.FormatException expected) {
+                    refused = true;
+                }
+                check(refused, "another file renamed over the checked one is refused");
+                Files.deleteIfExists(path);
+            }
+            try (PixelFile.Writer a = new PixelFile.Writer(path, 4, 2, 3, false);
+                 PixelFile.Reader r = PixelFile.Reader.open(path, () -> { })) {
+                long f = a.write(new byte[32], null, 4, 2, 0, 1);
+                check(r.read(new Wire.FrameReady(f, (int) (f % 3), 0, 4, 2), false) != null, "an unchanged file opens and reads");
+            }
+        });
+
         test("disconnect(null) says bye with an empty reason", () -> {
             try (ReviewTests.Pair p = new ReviewTests.Pair()) {
                 p.guest.disconnect(null);

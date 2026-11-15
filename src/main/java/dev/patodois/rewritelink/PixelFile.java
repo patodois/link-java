@@ -161,7 +161,12 @@ public final class PixelFile {
 
     // ------------------------------------------------------------------ reader
 
-    /** Reads with positional I/O on Unix and a read-only map on Windows. Not thread-safe: use one reader per thread. */
+    /**
+     * Reads with positional I/O on Unix and a read-only map on Windows. Not thread-safe: use one reader per thread.
+     * {@link #open(Path)} checks the file before and after opening it without following links; a peer that swaps the
+     * file for a FIFO before the open, or swaps another regular file in and back between the open and the second check,
+     * is not detected (Java has neither a non-blocking open nor an {@code fstat} of an open channel).
+     */
     public static final class Reader implements AutoCloseable {
         private final FileChannel channel;
         private long newest;
@@ -230,16 +235,35 @@ public final class PixelFile {
          * is read as colour only.
          *
          * <p>The type is checked before the file is opened, because opening a FIFO for reading
-         * waits for a writer for ever and Java has no non-blocking open; a peer that swaps the file
-         * for a FIFO between the check and the open can still stall this call (the contract asks for
-         * {@code O_NONBLOCK} where the language has it).
+         * waits for a writer for ever and Java has no non-blocking open. The open does not follow a
+         * symbolic link, and afterwards the path must still name a regular file with the same file key
+         * (device and inode on Unix) as the one checked. What remains, for want of {@code O_NONBLOCK}
+         * and {@code fstat} in Java: a peer that swaps the file for a FIFO between the check and the
+         * open can still stall this call (the contract asks for {@code O_NONBLOCK} where the language
+         * has it), and since the second check examines the path, not the open handle, a peer that
+         * renames another regular file over the path just before the open and puts the first one back
+         * before the second check is not detected. Where the file system has no file key (it is null)
+         * only the type is compared.
          */
         public static Reader open(Path path) throws IOException {
+            return open(path, null);
+        }
+
+        /** {@link #open(Path)} with a hook run between the type check and the open, for the tests. */
+        static Reader open(Path path, Runnable beforeOpen) throws IOException {
             if (!path.isAbsolute()) throw new FormatException("the pixel file path is not absolute: " + path);
             BasicFileAttributes attrs = Files.readAttributes(path, BasicFileAttributes.class, LinkOption.NOFOLLOW_LINKS);
             if (!attrs.isRegularFile()) throw new FormatException("not a regular file: " + path);
-            FileChannel ch = FileChannel.open(path, StandardOpenOption.READ);
+            if (beforeOpen != null) beforeOpen.run();
+            // Not through a symbolic link (one swapped in after the check makes the open fail), and the file opened must
+            // be the one checked: Java has no fstat of an open channel, so the path is examined again and must still be a
+            // regular file with the same file key (device and inode on Unix).
+            FileChannel ch = FileChannel.open(path, StandardOpenOption.READ, LinkOption.NOFOLLOW_LINKS);
             try {
+                BasicFileAttributes again = Files.readAttributes(path, BasicFileAttributes.class, LinkOption.NOFOLLOW_LINKS);
+                if (!again.isRegularFile() || !Objects.equals(attrs.fileKey(), again.fileKey())) {
+                    throw new FormatException("the pixel file was replaced while it was opened: " + path);
+                }
                 long size = ch.size();
                 if (size < HEADER_LEN) throw new FormatException("pixel file shorter than its header");
                 if (size > Integer.MAX_VALUE) throw new FormatException("pixel file larger than 2 GiB");
