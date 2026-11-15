@@ -52,6 +52,9 @@ a read-only map. See [PIXEL-IO.md](PIXEL-IO.md).
 `PixelFile` is the shared-memory pixel channel of CONTRACT 9.6 (revision 3): a `Reader` that reads the
 file with bounded positional I/O on Unix or a protected Windows map, validates it, and copies a slot with the seqlock (colour and the optional linear depth
 plane), and a `Writer` for the sending side. `frame_channel` and `Frame` are parsed by `Link` as usual.
+A Java mapping holds at most 2 GiB, so the `Writer` (which maps the file everywhere) and the Windows `Reader` refuse a
+pixel file larger than 2147483647 bytes, for example 4096 x 4096 with depth and 16 slots, which the contract allows.
+The Unix `Reader` maps nothing and reads larger files.
 
 The seqlock has to work without `VarHandle` and without `sun.misc.Unsafe`, which Java 8 does not offer
 or this library does not want. (Writers and Windows mapped-reader cleanup may reach for Unsafe, by
@@ -302,7 +305,8 @@ vectors only change together with a deliberate edit of that constant. To take ne
 `scripts/sync-link-vectors.sh <this repository>` from the rewrite-bridge checkout (it replaces
 `tests/vectors/link`, keeps the `.gitattributes` entry that stops line-ending conversion, and prints the digest),
 paste the printed digest into `VECTORS_DIGEST`, and run the tests. `RBL_VECTORS_DIR` points the runner at another
-directory and `RBL_VECTORS_SKIP_LARGE=1` skips the cases that need a sparse file of up to 1 GiB.
+directory and `RBL_VECTORS_SKIP_LARGE=1` skips the cases that need a sparse file of up to 1 GiB, and the test that
+opens a sparse pixel file of just over 2 GiB.
 
 ### Interop peer
 

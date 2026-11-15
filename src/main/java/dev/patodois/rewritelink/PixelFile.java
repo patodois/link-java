@@ -269,7 +269,8 @@ public final class PixelFile {
                 }
                 long size = ch.size();
                 if (size < HEADER_LEN) throw new FormatException("pixel file shorter than its header");
-                if (size > Integer.MAX_VALUE) throw new FormatException("pixel file larger than 2 GiB");
+                // Only a mapping (Windows) is limited to 2 GiB; the Unix reader's offsets are longs.
+                if (WINDOWS && size > Integer.MAX_VALUE) throw new FormatException("pixel file larger than the 2 GiB a Java mapping holds");
                 ByteBuffer m = ByteBuffer.allocate(HEADER_LEN).order(ByteOrder.LITTLE_ENDIAN);
                 if (!readExact(ch, m, 0)) throw new FormatException("pixel header truncated while opening");
                 m.flip();

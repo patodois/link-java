@@ -41,7 +41,8 @@ python3 -m venv .workflow-tests
 - Bind and connect only to `127.0.0.1`; `Link.poll()` must not block.
 - Follow rewrite-bridge's contract; vectors come from it and are pinned by digest.
 - Present with `readLatest`, close obsolete readers and discard results from replaced channels.
-- Shared-vector tests can use sparse files up to 1 GiB; `RBL_VECTORS_SKIP_LARGE=1` skips those cases.
+- Shared-vector tests can use sparse files up to 1 GiB, and one test a sparse file of just over 2 GiB;
+  `RBL_VECTORS_SKIP_LARGE=1` skips them.
 - Tests need no game files; game integration claims are limited to what the README records.
 
 ## Public files

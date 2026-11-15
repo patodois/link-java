@@ -28,6 +28,11 @@ both lock and frame again. Short reads are completed; EOF and I/O errors reject 
 copy. The metadata size check also rejects shrinking unused tail bytes. It is an early
 rejection, not the protection against later truncation.
 
+Size limit in Java: a Java mapping holds at most 2 GiB, so the Java writer (it maps the file on
+every OS) and the Java Windows reader refuse a pixel file larger than 2147483647 bytes, such as
+4096x4096 with depth and 16 slots, though the contract allows it ("a limit of its own"). The
+Java Unix reader maps nothing and opens larger files.
+
 Normal cropped planes use up to eight rows per vectored read on macOS/Linux (preadv in
 Rust/C/C#, scatter read after positioning the private single-threaded FileChannel in Java).
 Data goes directly into owned output in Rust/C/C#; padding goes into reusable scratch and

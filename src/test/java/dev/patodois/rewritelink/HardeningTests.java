@@ -162,6 +162,55 @@ final class HardeningTests {
             }
         });
 
+        test("pixel file: a Unix reader opens a file over 2 GiB and reads its last slot", () -> {
+            if (System.getProperty("os.name", "").startsWith("Windows")) return; // mapped there: 2 GiB at most
+            if ("1".equals(System.getenv("RBL_VECTORS_SKIP_LARGE"))) {
+                System.out.println("     skipped: RBL_VECTORS_SKIP_LARGE=1");
+                return;
+            }
+            // 4096 x 4096 with depth and 16 slots: 2147484736 bytes, inside every limit of the contract. Sparse: only the
+            // header, one slot header and two rows are written.
+            int w = 4096, h = 4096, stride = w * 4, slots = 16;
+            long colourEnd = 64 + (long) stride * h, depthOffset = colourEnd, slotSize = depthOffset + (long) stride * h;
+            long length = 64 + slots * slotSize;
+            check(length > Integer.MAX_VALUE, "the file is over 2 GiB: " + length);
+            Path path = tempDir("large").resolve("f.frames");
+            try {
+                java.nio.ByteBuffer head = java.nio.ByteBuffer.allocate(64).order(java.nio.ByteOrder.LITTLE_ENDIAN);
+                head.put(new byte[] {'R', 'B', 'F', 'R', 'A', 'M', 'E', 0}).putInt(1).putInt(slots).putInt(w).putInt(h)
+                        .putInt(stride).putInt(PixelFile.FORMAT_RGBA8).putLong(slotSize)
+                        .putInt(PixelFile.DEPTH_LINEAR_F32).putInt(stride).putLong(depthOffset);
+                long base = 64 + 15 * slotSize;
+                java.nio.ByteBuffer slot = java.nio.ByteBuffer.allocate(64).order(java.nio.ByteOrder.LITTLE_ENDIAN);
+                slot.putLong(0).putLong(7).putLong(123).putInt(5).putInt(4).putInt(2);
+                byte[] row0 = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16}, row1 = new byte[16];
+                java.util.Arrays.fill(row1, (byte) 99);
+                try (java.io.RandomAccessFile f = new java.io.RandomAccessFile(path.toFile(), "rw")) {
+                    f.setLength(length);
+                    f.seek(0);
+                    f.write(head.array());
+                    f.seek(base);
+                    f.write(slot.array());
+                    f.seek(base + 64);
+                    f.write(row0);
+                    f.seek(base + 64 + stride);
+                    f.write(row1);
+                }
+                try (PixelFile.Reader r = PixelFile.Reader.open(path)) {
+                    eq(r.slots, 16, "slots");
+                    PixelFile.Frame got = r.readLatest(new Wire.FrameReady(7, 15, 5, 4, 2), false);
+                    check(got != null, "slot 15 reads");
+                    byte[] want = new byte[32];
+                    System.arraycopy(row0, 0, want, 0, 16);
+                    System.arraycopy(row1, 0, want, 16, 16);
+                    check(java.util.Arrays.equals(got.rgba(), want), "the pixels of slot 15");
+                    eq(got.timeUs(), 123L, "time_us");
+                }
+            } finally {
+                Files.deleteIfExists(path);
+            }
+        });
+
         test("disconnect(null) says bye with an empty reason", () -> {
             try (ReviewTests.Pair p = new ReviewTests.Pair()) {
                 p.guest.disconnect(null);
