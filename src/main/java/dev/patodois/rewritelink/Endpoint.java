@@ -166,18 +166,11 @@ public final class Endpoint {
      * @throws IOException if the file is missing or refused; the message never contains the file's contents
      */
     public static Endpoint read(Path path) throws IOException {
-        boolean regular;
-        Set<PosixFilePermission> perms = null;
-        if (posix()) {
-            PosixFileAttributes a = Files.readAttributes(path, PosixFileAttributes.class);
-            regular = a.isRegularFile();
-            perms = a.permissions();
-        } else {
-            regular = Files.readAttributes(path, BasicFileAttributes.class).isRegularFile();
-        }
-        if (!regular) throw new IOException("the endpoint file is not a regular file");
-        if (perms != null) {
-            for (PosixFilePermission p : perms) {
+        Class<? extends BasicFileAttributes> kind = posix() ? PosixFileAttributes.class : BasicFileAttributes.class;
+        BasicFileAttributes a = Files.readAttributes(path, kind);
+        if (!a.isRegularFile()) throw new IOException("the endpoint file is not a regular file");
+        if (a instanceof PosixFileAttributes) {
+            for (PosixFilePermission p : ((PosixFileAttributes) a).permissions()) {
                 String n = p.name();
                 if (n.startsWith("GROUP_") || n.startsWith("OTHERS_")) {
                     throw new IOException("the endpoint file is accessible to the group or to others");
