@@ -34,9 +34,7 @@ final class ReviewTests {
     private ReviewTests() {}
 
     private static Path temp(String name) throws Exception {
-        Path dir = Files.createTempDirectory("review-test");
-        dir.toFile().deleteOnExit();
-        return dir.resolve(name);
+        return LinkTests.tempDir("review-test").resolve(name);
     }
 
     private static void put(RandomAccessFile f, long pos, byte[] b) throws Exception {
@@ -283,7 +281,7 @@ final class ReviewTests {
         });
 
         test("late old UDP does not poison the new channel", () -> {
-            java.nio.file.Path path = java.nio.file.Files.createTempDirectory("order").resolve("f.frames");
+            java.nio.file.Path path = LinkTests.tempDir("order").resolve("f.frames");
             try (Pair p = new Pair(); PixelFile.Writer w = new PixelFile.Writer(path, 2, 2, 3, false)) {
                 w.write(new byte[16], null, 2, 2, 0, 1);
                 p.announce(new Control.FrameChannel(path.toString(), 2, 2, 3));
@@ -306,27 +304,22 @@ final class ReviewTests {
             }
         });
 
-        // ----- M1 (Java): a new frame_channel restarts the frame numbers
+        // ----- M1 (Java): a new frame_channel restarts the frame numbers. Since revision 7 Link passes every Frame
+        // announcement on and presentation order lives in PixelFile.Reader, so the test follows what an application does:
+        // one reader per announced file, frames presented with readLatest.
         test("review M1: frames of a new pixel file are not stale", () -> {
-            try (Pair p = new Pair()) {
-                List<LinkEvent> he = new ArrayList<>();
-                for (long f = 1; f <= 10; f++) p.guest.sendFrame(new Wire.FrameReady(f, (int) (f % 3), 0, 16, 8));
-                check(until(2000, () -> {
-                    he.addAll(p.host.poll());
-                    p.guest.poll();
-                    return count(he, LinkEvent.Frame.class) == 10;
-                }), "10 frame announcements expected; got " + count(he, LinkEvent.Frame.class));
-                he.clear();
-                p.announce(new Control.FrameChannel("/tmp/second.frames", 32, 16, 3));
-                Thread.sleep(30);
-                he.addAll(p.host.poll());
-                for (long f = 1; f <= 5; f++) p.guest.sendFrame(new Wire.FrameReady(f, (int) (f % 3), 0, 32, 16));
-                until(1000, () -> {
-                    he.addAll(p.host.poll());
-                    p.guest.poll();
-                    return count(he, LinkEvent.Frame.class) >= 5;
-                });
-                eq(count(he, LinkEvent.Frame.class), 5, "frames 1..5 of the new channel; stale counter " + p.host.stale);
+            Path dir = LinkTests.tempDir("new-channel");
+            try (Pair p = new Pair();
+                 PixelFile.Writer a = new PixelFile.Writer(dir.resolve("a.frames"), 16, 8, 3, false);
+                 PixelFile.Writer b = new PixelFile.Writer(dir.resolve("b.frames"), 32, 16, 3, false)) {
+                PixelFile.Reader first = presentChannel(p, a, 10, null);
+                try {
+                    // The reader of the first file has shown frame 10, so frames 1 to 5 of the second are stale to it.
+                    PixelFile.Reader second = presentChannel(p, b, 5, first);
+                    second.close();
+                } finally {
+                    first.close();
+                }
             }
         });
 
@@ -561,6 +554,42 @@ final class ReviewTests {
             check(ev.get(0) instanceof LinkEvent.Connected, "connected: " + ev);
             return null;
         }
+    }
+
+    /**
+     * The guest announces {@code w}'s file and then {@code frames} frames it writes; the host opens a reader for the file
+     * named by the frame_channel event (closing {@code previous}, as an application does) and presents every announced
+     * frame with readLatest, which must return each of them. Returns the open reader.
+     */
+    static PixelFile.Reader presentChannel(Pair p, PixelFile.Writer w, int frames, PixelFile.Reader previous) throws Exception {
+        p.guest.announceFrames(w);
+        List<LinkEvent> he = new ArrayList<>();
+        check(until(2000, () -> {
+            he.addAll(p.host.poll());
+            p.guest.poll();
+            return count(he, LinkEvent.FrameChannel.class) == 1;
+        }), "the frame_channel arrives");
+        Control.FrameChannel channel = ((LinkEvent.FrameChannel) he.stream().filter(e -> e instanceof LinkEvent.FrameChannel)
+                .findFirst().get()).channel();
+        long staleBefore = previous == null ? 0 : previous.staleReads();
+        PixelFile.Reader r = PixelFile.Reader.open(java.nio.file.Paths.get(channel.path()));
+        int shown = 0;
+        for (int i = 0; i < frames; i++) {
+            long f = w.write(new byte[w.width * w.height * 4], null, w.width, w.height, 0, i + 1);
+            Wire.FrameReady ready = new Wire.FrameReady(f, (int) (f % w.slots), 0, w.width, w.height);
+            if (previous != null && i == 0) check(previous.readLatest(ready, false) == null, "frame 1 is stale to the old reader");
+            he.clear();
+            p.guest.sendFrame(ready);
+            check(until(2000, () -> {
+                he.addAll(p.host.poll());
+                p.guest.poll();
+                return count(he, LinkEvent.Frame.class) == 1;
+            }), "the announcement of frame " + f + " arrives");
+            if (r.readLatest(((LinkEvent.Frame) he.stream().filter(e -> e instanceof LinkEvent.Frame).findFirst().get()).frame(), false) != null) shown++;
+        }
+        eq(shown, frames, "frames of " + channel.path() + " presented; stale reads " + r.staleReads());
+        if (previous != null) check(previous.staleReads() > staleBefore, "the old reader counted the stale frame");
+        return r;
     }
 
     static int count(List<LinkEvent> events, Class<? extends LinkEvent> type) {

@@ -45,9 +45,7 @@ final class TokenTests {
     }
 
     private static Path tempDir() throws Exception {
-        Path d = Files.createTempDirectory("token-test");
-        d.toFile().deleteOnExit();
-        return d;
+        return LinkTests.tempDir("token-test");
     }
 
     /** Deletes the files of a directory the test made (never recursive beyond one level), then the directory. */

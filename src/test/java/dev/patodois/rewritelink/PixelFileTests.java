@@ -20,9 +20,7 @@ final class PixelFileTests {
     private PixelFileTests() {}
 
     private static Path temp(String name) throws Exception {
-        Path dir = Files.createTempDirectory("pixelfile-test");
-        dir.toFile().deleteOnExit();
-        return dir.resolve(name);
+        return LinkTests.tempDir("pixelfile-test").resolve(name);
     }
 
     /** Flips a filled buffer for writing. Buffer.flip() returns Buffer on Java 8 and ByteBuffer later, hence the helper. */

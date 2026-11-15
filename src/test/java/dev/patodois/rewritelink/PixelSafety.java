@@ -55,7 +55,7 @@ public final class PixelSafety {
         @Override protected void implCloseChannel() throws IOException { ch.close(); }
     }
     static void child() throws Exception {
-        Path path = Files.createTempDirectory("truncate").resolve("f.frames");
+        Path path = LinkTests.tempDir("truncate").resolve("f.frames");
         try (PixelFile.Writer w = new PixelFile.Writer(path,64,64,1,false)) {
             w.write(new byte[64*64*4], null,64,64,0,1);
             try (PixelFile.Reader r = PixelFile.Reader.open(path)) {
@@ -63,6 +63,8 @@ public final class PixelSafety {
                 f.set(r, new TruncateAfterSize((FileChannel)f.get(r),path));
                 if (r.read(new Wire.FrameReady(1,0,0,64,64),false) != null) throw new AssertionError("truncated frame delivered");
             }
+        } finally {
+            LinkTests.deleteTempDirs(); // this runs in a JVM of its own
         }
     }
     static void run() {
@@ -85,17 +87,17 @@ public final class PixelSafety {
         }
     }
     static void writerClose() throws Exception {
-        Path path = Files.createTempDirectory("writer-close").resolve("f.frames");
+        Path path = LinkTests.tempDir("writer-close").resolve("f.frames");
         PixelFile.Writer w = new PixelFile.Writer(path, 4, 2, 3, false);
         w.write(new byte[32], null, 4, 2, 0, 1);
         w.close();
         if (Files.exists(path)) throw new AssertionError("the writer's file is still there");
-        Files.delete(path.getParent());
+        LinkTests.deleteTempDirs(); // this runs in a JVM of its own
     }
     static void apiTests() {
         LinkTests.test("pixel widths can shrink and grow without stale limits or pixels", () -> {
             for(boolean wantDepth:new boolean[]{false,true}) {
-                Path path=Files.createTempDirectory("width-sequence").resolve("f.frames");
+                Path path=LinkTests.tempDir("width-sequence").resolve("f.frames");
                 try(PixelFile.Writer w=new PixelFile.Writer(path,16,16,1,true);
                     PixelFile.Reader r=PixelFile.Reader.open(path)) {
                     int frame=0, failures=0;
@@ -119,7 +121,7 @@ public final class PixelSafety {
         LinkTests.test("truncation inside either plane cannot produce a frame", () -> {
             if(System.getProperty("os.name").startsWith("Windows")) return;
             for(boolean depth:new boolean[]{false,true}) {
-                Path path=Files.createTempDirectory("plane").resolve("f.frames");
+                Path path=LinkTests.tempDir("plane").resolve("f.frames");
                 try(PixelFile.Writer w=new PixelFile.Writer(path,16,8,1,true)) {
                     w.write(new byte[128],new float[32],8,4,0,1);
                     try(PixelFile.Reader r=PixelFile.Reader.open(path)) {
@@ -133,7 +135,7 @@ public final class PixelSafety {
         });
         LinkTests.test("cropped planes use bounded vector reads", () -> {
             if(System.getProperty("os.name").startsWith("Windows")) return;
-            Path path=Files.createTempDirectory("gather").resolve("f.frames");
+            Path path=LinkTests.tempDir("gather").resolve("f.frames");
             try(PixelFile.Writer w=new PixelFile.Writer(path,16,8,1,true)) {
                 byte[] px=new byte[128];Arrays.fill(px,(byte)7);float[] depth=new float[32];Arrays.fill(depth,2f);
                 w.write(px,depth,8,4,0,1);
@@ -165,7 +167,7 @@ public final class PixelSafety {
             LinkTests.check(exit==0 && out.indexOf("Unsafe")<0,"writer close must be silent: "+out);
         });
         LinkTests.test("presentation state belongs to each file and accepts a null announcement as a miss", () -> {
-            Path dir=Files.createTempDirectory("two-files");
+            Path dir=LinkTests.tempDir("two-files");
             try(PixelFile.Writer a=new PixelFile.Writer(dir.resolve("a.frames"),2,2,3,false);
                 PixelFile.Writer b=new PixelFile.Writer(dir.resolve("b.frames"),3,2,3,true)) {
                 for(int i=0;i<5;i++) a.write(new byte[16],null,2,2,0,1);
@@ -189,7 +191,7 @@ public final class PixelSafety {
         for(int[] size:sizes) for(boolean dep:new boolean[]{false,true}) {
             int fw=size[0],fh=size[1],width=size[2],height=size[3],pixels=width*height,n=pixels>10000000?5:30;
             if(System.getenv("RBL_BENCH_CROPPED_ONLY")!=null && width==fw) continue;
-            Path path=Files.createTempDirectory("bench").resolve("f.frames");
+            Path path=LinkTests.tempDir("bench").resolve("f.frames");
             byte[] px=new byte[pixels*4]; Arrays.fill(px,(byte)7);
             float[] depth=dep?new float[pixels]:null; if(depth!=null) Arrays.fill(depth,2f);
             try(PixelFile.Writer w=new PixelFile.Writer(path,fw,fh,1,dep)) {
@@ -213,10 +215,10 @@ public final class PixelSafety {
     }
     public static void main(String[] args) throws Exception {
         if(args.length>0 && args[0].equals("child")) child();
-        else if(args.length>0 && args[0].equals("bench")) bench();
+        else if(args.length>0 && args[0].equals("bench")) { bench(); LinkTests.deleteTempDirs(); }
         else if(args.length>0 && args[0].equals("reader-close")) readerClose();
         else if(args.length>0 && args[0].equals("writer-close")) writerClose();
-        else if(args.length>0 && args[0].equals("api")) { apiTests(); if(LinkTests.failures()!=0) System.exit(1); }
-        else { run(); if (LinkTests.failures() != 0) System.exit(1); }
+        else if(args.length>0 && args[0].equals("api")) { apiTests(); LinkTests.deleteTempDirs(); if(LinkTests.failures()!=0) System.exit(1); }
+        else { run(); LinkTests.deleteTempDirs(); if (LinkTests.failures() != 0) System.exit(1); }
     }
 }

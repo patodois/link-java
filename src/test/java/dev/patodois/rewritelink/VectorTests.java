@@ -367,6 +367,39 @@ final class VectorTests {
         }
     }
 
+    /**
+     * Sends {@code line} (plus a newline) as the first line of a connection to a live host and returns the reason of the
+     * host's HandshakeFailed event, after checking that the host's bye carries the same reason.
+     */
+    static String liveRefusal(byte[] line) throws Exception {
+        LinkConfig hc = new LinkConfig("vector host");
+        hc.controlPort = 0;
+        try (Link host = Link.host(hc); Socket s = new Socket(LO, host.controlPort())) {
+            s.setSoTimeout((int) STEP_WAIT_MS);
+            OutputStream out = s.getOutputStream();
+            out.write(line);
+            out.write('\n');
+            out.flush();
+            String[] reason = {null};
+            boolean ended = LinkTests.until(STEP_WAIT_MS, () -> {
+                for (LinkEvent e : host.poll()) {
+                    if (e instanceof LinkEvent.HandshakeFailed) reason[0] = ((LinkEvent.HandshakeFailed) e).reason();
+                }
+                return reason[0] != null;
+            });
+            if (!ended) throw new Mismatch("a live host did not end the handshake");
+            for (int i = 0; i < 20; i++) host.poll(); // let the bye out
+            ByteArrayOutputStream got = new ByteArrayOutputStream();
+            InputStream in = s.getInputStream();
+            for (int b; (b = in.read()) >= 0 && b != '\n'; ) got.write(b);
+            String bye = new String(got.toByteArray(), StandardCharsets.UTF_8);
+            if (!bye.startsWith("{\"type\":\"bye\"") || !bye.contains(reason[0])) {
+                throw new Mismatch("the host's bye " + quoted(bye) + " does not carry " + quoted(reason[0]));
+            }
+            return reason[0];
+        }
+    }
+
     static void checkControl(Map<String, Object> c) throws Exception {
         String line;
         if (c.get("line") != null) {
@@ -376,7 +409,12 @@ final class VectorTests {
                 line = StandardCharsets.UTF_8.newDecoder().onMalformedInput(CodingErrorAction.REPORT)
                         .onUnmappableCharacter(CodingErrorAction.REPORT).decode(java.nio.ByteBuffer.wrap(unhex(str(c.get("line_hex"))))).toString();
             } catch (CharacterCodingException notUtf8) {
-                return; // the reader refuses a line that is not UTF-8 before it parses it (sessions.json checks that path)
+                // The link refuses a line that is not UTF-8 before it parses it, so Control.parse never sees one: send the
+                // bytes to a live host and require that refusal.
+                if (!"reject".equals(c.get("expect"))) throw new Mismatch("a line that is not UTF-8 is expected to be " + c.get("expect"));
+                String reason = liveRefusal(unhex(str(c.get("line_hex"))));
+                if (!reason.contains("control line is not UTF-8")) throw new Mismatch("a live host ended the handshake with " + quoted(reason));
+                return;
             }
         }
         Control parsed = null;
@@ -559,6 +597,17 @@ final class VectorTests {
     // ---------------------------------------------------------------------------------------------
     // pixelfiles.json
 
+    /** A relative path from the working directory that names {@code target}, or null if there is none. */
+    static Path relativeFromWorkingDirectory(Path target) {
+        try {
+            Path relative = Paths.get("").toAbsolutePath().relativize(target);
+            if (relative.isAbsolute() || !Files.isSameFile(relative, target)) return null;
+            return relative;
+        } catch (IllegalArgumentException | IOException e) {
+            return null;
+        }
+    }
+
     static void deleteTree(Path root) {
         try (Stream<Path> walk = Files.walk(root)) {
             List<Path> all = walk.sorted(Collections.reverseOrder()).collect(Collectors.toList());
@@ -651,17 +700,25 @@ final class VectorTests {
             } else {
                 switch (str(kind)) {
                     case "relative": {
-                        // A valid copy sits in the working directory; only the relative spelling may refuse it.
-                        String name = "rbl-vector-relative-" + System.nanoTime() + ".frames";
-                        copyFixture(c, Paths.get(name).toAbsolutePath());
+                        // A valid copy sits in the temporary directory and a relative path from the working directory names
+                        // it; only the relative spelling may refuse it. Where no relative path reaches the temporary
+                        // directory (another drive on Windows), the copy goes into the working directory instead.
+                        copyFixture(c, path);
+                        Path relative = relativeFromWorkingDirectory(path);
+                        Path inWorkingDir = null;
+                        if (relative == null) {
+                            relative = Paths.get("rbl-vector-relative-" + System.nanoTime() + ".frames");
+                            inWorkingDir = relative.toAbsolutePath();
+                            copyFixture(c, inWorkingDir);
+                        }
                         try {
-                            PixelFile.Reader r = PixelFile.Reader.open(Paths.get(name));
+                            PixelFile.Reader r = PixelFile.Reader.open(relative);
                             r.close();
                             throw new Mismatch("opened a relative path");
                         } catch (IOException refused) {
                             return;
                         } finally {
-                            Files.deleteIfExists(Paths.get(name).toAbsolutePath());
+                            if (inWorkingDir != null) Files.deleteIfExists(inWorkingDir);
                         }
                     }
                     case "missing":

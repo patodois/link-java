@@ -25,6 +25,22 @@ import dev.patodois.rewritelink.Wire.WireException;
  */
 public final class LinkTests {
     private static int passed, failed;
+    private static final List<java.nio.file.Path> TEMP_DIRS = Collections.synchronizedList(new ArrayList<>());
+
+    /** A new temporary directory that {@link #deleteTempDirs()} removes, with everything in it, at the end of the run. */
+    static java.nio.file.Path tempDir(String prefix) throws java.io.IOException {
+        java.nio.file.Path dir = java.nio.file.Files.createTempDirectory(prefix);
+        TEMP_DIRS.add(dir);
+        return dir;
+    }
+
+    /** Removes the directories {@link #tempDir} made. */
+    static void deleteTempDirs() {
+        synchronized (TEMP_DIRS) {
+            for (java.nio.file.Path dir : TEMP_DIRS) VectorTests.deleteTree(dir);
+            TEMP_DIRS.clear();
+        }
+    }
 
     static int failures() { return failed; }
 
@@ -741,8 +757,7 @@ public final class LinkTests {
         });
 
         test("revision 5: PixelFile.Reader.read(FrameReady) skips a frame whose size the datagram and the slot disagree on", () -> {
-            java.nio.file.Path dir = java.nio.file.Files.createTempDirectory("rev5-test");
-            dir.toFile().deleteOnExit();
+            java.nio.file.Path dir = tempDir("rev5-test");
             java.nio.file.Path path = dir.resolve("f.frames");
             try (PixelFile.Writer w = new PixelFile.Writer(path, 4, 2, 3, false)) {
                 byte[] rgba = new byte[4 * 2 * 4];
@@ -769,6 +784,7 @@ public final class LinkTests {
         FuzzFindingTests.run();
         HardeningTests.run();
         VectorTests.run();
+        deleteTempDirs();
 
         System.out.println();
         System.out.println(passed + " passed, " + failed + " failed");

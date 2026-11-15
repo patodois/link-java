@@ -356,7 +356,7 @@ final class HardeningTests {
     }
 
     static Path tempDir(String prefix) throws Exception {
-        return Files.createTempDirectory(prefix);
+        return LinkTests.tempDir(prefix);
     }
 
     // On Java 8 every NIO channel operation, a non-blocking one too, closes the channel when the calling thread's interrupt
