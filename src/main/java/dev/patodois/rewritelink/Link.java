@@ -18,7 +18,6 @@ import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
-import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 
@@ -418,7 +417,6 @@ public final class Link implements AutoCloseable {
         this.listener = l;
         this.udp = u;
         this.conn = new Idle(now);
-        this.seq = 0;
     }
 
     private static void requireRange(String name, long value, long min, long max) {
@@ -492,9 +490,7 @@ public final class Link implements AutoCloseable {
         boolean interrupted = Thread.interrupted(); // see the class comment
         try {
             long now = now();
-            for (Iterator<Closing> it = closing.iterator(); it.hasNext(); ) {
-                if (!it.next().pump(now)) it.remove();
-            }
+            pumpClosing(now);
             pollConnect(now);
             pollControl(now);
             pollUdp(now);
@@ -506,6 +502,11 @@ public final class Link implements AutoCloseable {
         } finally {
             if (interrupted) Thread.currentThread().interrupt();
         }
+    }
+
+    /** Makes progress on the connections being closed and forgets the ones that are done. */
+    private void pumpClosing(long now) {
+        closing.removeIf(c -> !c.pump(now));
     }
 
     /** Only a guest's hello carries a token (CONTRACT.md 6.2). */
@@ -1111,8 +1112,7 @@ public final class Link implements AutoCloseable {
                 Thread.currentThread().interrupt();
                 break;
             }
-            long t = now();
-            closing.removeIf(c -> !c.pump(t));
+            pumpClosing(now());
         }
         for (Closing c : closing) c.ctl.closeQuietly();
         closing.clear();

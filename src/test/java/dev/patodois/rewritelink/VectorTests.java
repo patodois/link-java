@@ -64,12 +64,8 @@ final class VectorTests {
      */
     static final String VECTORS_DIGEST = "07cf745d30318403b1808b974f050914db061d78a4351683e0c20fc0284ceab8";
 
-    /** Vectors this implementation fails, id to reason. Empty when it passes them all. */
+    /** Vectors this implementation fails, id to reason (put them here). Empty when it passes them all. */
     static final Map<String, String> KNOWN_DISAGREEMENTS = new LinkedHashMap<>();
-
-    private static void known(String id, String reason) {
-        KNOWN_DISAGREEMENTS.put(id, reason);
-    }
 
     private static final long STEP_WAIT_MS = 3000;
     private static final InetAddress LO = loopback();

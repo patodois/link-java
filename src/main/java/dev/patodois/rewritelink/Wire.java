@@ -574,9 +574,7 @@ public final class Wire {
 
             @Override
             public boolean equals(Object o) {
-                if (this == o) return true;
-                if (!(o instanceof Heartbeat)) return false;
-                return true;
+                return o instanceof Heartbeat;
             }
 
             @Override
