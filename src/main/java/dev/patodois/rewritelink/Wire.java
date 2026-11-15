@@ -779,8 +779,13 @@ public final class Wire {
             if (((Datagram.CameraMsg) body).camera().depthRange() == null) throw new WireException("bad value: depth_range");
             payload = CAMERA_LEN;
         } else if (body instanceof Datagram.PoseMsg) {
-            int n = ((Datagram.PoseMsg) body).poses().size();
+            List<Pose> poses = ((Datagram.PoseMsg) body).poses();
+            int n = poses.size();
             if (n < 1 || n > MAX_POSES) throw new WireException("pose count " + n);
+            for (Pose p : poses) {
+                // A u32 on the wire: a larger id would arrive as another entity.
+                if (p.entity() < 0 || p.entity() > 0xFFFFFFFFL) throw new WireException("bad value: entity " + p.entity() + " is outside 0..4294967295");
+            }
             payload = POSE_HEADER_LEN + POSE_LEN * n;
         } else if (body instanceof Datagram.CollisionMsg) {
             CollisionChunk c = ((Datagram.CollisionMsg) body).chunk();
@@ -984,7 +989,8 @@ public final class Wire {
      *
      * @throws WireException if the snapshot needs more than {@link #MAX_COLLISION_CHUNKS} chunks, that is
      *         more than {@code MAX_COLLISION_CHUNKS * MAX_TRIANGLES} (925696) triangles; this is checked
-     *         from the size alone, before anything is copied or allocated
+     *         from the size alone, before anything is copied or allocated. Also if {@code center} is not 3 floats
+     *         or a triangle is not 9.
      */
     public static List<CollisionChunk> chunks(int query, float[] center, float radius, List<float[]> tris)
             throws WireException {
@@ -992,6 +998,12 @@ public final class Wire {
         if (needed > MAX_COLLISION_CHUNKS) {
             throw new WireException("too many triangles: " + tris.size() + " need " + needed + " chunks, a snapshot has at most "
                     + MAX_COLLISION_CHUNKS + " (" + (long) MAX_COLLISION_CHUNKS * MAX_TRIANGLES + " triangles)");
+        }
+        // Checked here, before anything is queued: a bad triangle found when its chunk is encoded would leave the receiver
+        // with part of a query.
+        if (center == null || center.length != 3) throw new WireException("bad value: the centre has 3 floats");
+        for (float[] t : tris) {
+            if (t == null || t.length != 9) throw new WireException("bad value: a triangle has 9 floats");
         }
         int count = (int) needed;
         List<CollisionChunk> out = new ArrayList<>(count);

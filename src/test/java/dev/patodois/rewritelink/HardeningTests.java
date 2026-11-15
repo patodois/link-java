@@ -75,6 +75,42 @@ final class HardeningTests {
 
         interrupts();
 
+        test("send: values the wire cannot carry are refused with nothing sent and the session kept", () -> {
+            try (ReviewTests.Pair p = new ReviewTests.Pair()) {
+                LinkTests.expectWireError(() -> p.guest.spawn(new Control.Spawn(-1, "t", "a", null)), "spawn of entity -1");
+                LinkTests.expectWireError(() -> p.guest.spawn(new Control.Spawn(1L << 32, "t", "a", null)), "spawn of entity 2^32");
+                LinkTests.expectWireError(() -> p.guest.despawn(-1), "despawn of entity -1");
+                LinkTests.expectWireError(() -> p.guest.announceFrames(new Control.FrameChannel("/x.frames", -1, 2, 3)), "width -1");
+                LinkTests.expectWireError(() -> p.guest.announceFrames(new Control.FrameChannel("/x.frames", 2, 1L << 32, 3)), "height 2^32");
+                LinkTests.expectWireError(() -> p.guest.announceFrames(new Control.FrameChannel("/x.frames", 2, 2, -3)), "slots -3");
+                Wire.Pose far = Wire.Pose.identity((1L << 32) + 7, Wire.nowUs());
+                LinkTests.expectWireError(() -> Wire.encode(new Wire.Header(1, 0, 1, 0, 0), new Wire.Datagram.PoseMsg(Collections.singletonList(far))),
+                        "Wire.encode of entity 2^32 + 7");
+                LinkTests.expectWireError(() -> p.guest.sendPoses(Collections.singletonList(far)), "a pose of entity 2^32 + 7");
+                List<float[]> tris = new ArrayList<>();
+                for (int i = 0; i < Wire.MAX_TRIANGLES; i++) tris.add(new float[9]);
+                tris.add(new float[8]); // the first triangle of the second chunk
+                LinkTests.expectWireError(() -> p.guest.sendCollision(new float[3], 1f, tris), "a triangle of 8 floats");
+                LinkTests.expectWireError(() -> p.guest.sendCollision(new float[3], 1f, Collections.singletonList(null)), "a null triangle");
+                LinkTests.expectWireError(() -> p.guest.sendCollision(new float[2], 1f, Collections.<float[]>emptyList()), "a centre of 2 floats");
+                long sentBefore = p.guest.datagramsSent;
+                p.guest.poll();
+                eq(p.guest.datagramsSent - sentBefore <= 1, true, "no collision chunk was queued (a heartbeat may go)");
+
+                // Nothing reached the host: the session is intact and the next valid messages arrive in order.
+                p.guest.spawn(new Control.Spawn(4294967295L, "t", "a", null));
+                eq(p.guest.sendCollision(new float[3], 1f, Collections.singletonList(new float[9])), 1, "the query number was not used");
+                List<LinkEvent> he = new ArrayList<>();
+                check(until(2000, () -> {
+                    he.addAll(p.host.poll());
+                    p.guest.poll();
+                    return ReviewTests.count(he, LinkEvent.Spawn.class) == 1 && ReviewTests.count(he, LinkEvent.Collision.class) == 1;
+                }), "the valid spawn and snapshot arrive: " + he);
+                eq(((LinkEvent.Spawn) he.stream().filter(e -> e instanceof LinkEvent.Spawn).findFirst().get()).spawn().entity(), 4294967295L, "entity");
+                check(ReviewTests.count(he, LinkEvent.Lost.class) == 0 && p.host.isConnected() && p.guest.isConnected(), "still connected: " + he);
+            }
+        });
+
         test("disconnect(null) says bye with an empty reason", () -> {
             try (ReviewTests.Pair p = new ReviewTests.Pair()) {
                 p.guest.disconnect(null);

@@ -973,8 +973,13 @@ public final class Link implements AutoCloseable {
         return send(new Datagram.CameraMsg(camera));
     }
 
-    /** Sends poses, at most {@link Wire#MAX_POSES} per datagram. */
+    /**
+     * Sends poses, at most {@link Wire#MAX_POSES} per datagram.
+     *
+     * @throws WireException if not connected or an entity is outside 0..4294967295 (nothing is sent then)
+     */
     public synchronized void sendPoses(List<Wire.Pose> poses) throws WireException {
+        for (Wire.Pose p : poses) u32("entity", p.entity()); // all of them first: no datagram goes out for a bad list
         for (int i = 0; i < poses.size(); i += Wire.MAX_POSES) {
             send(new Datagram.PoseMsg(poses.subList(i, Math.min(poses.size(), i + Wire.MAX_POSES))));
         }
@@ -991,7 +996,8 @@ public final class Link implements AutoCloseable {
      * anything is copied or queued, and the queue and the query number stay as they were; send the
      * triangles nearest to {@code center} instead.
      *
-     * @throws WireException if the link is not connected or the snapshot is over the limit
+     * @throws WireException if the link is not connected, the snapshot is over the limit, or {@code center} is not 3
+     *         floats or a triangle not 9; nothing is queued then
      */
     public synchronized int sendCollision(float[] center, float radius, List<float[]> triangles)
             throws WireException {
@@ -1019,10 +1025,12 @@ public final class Link implements AutoCloseable {
         send(new Datagram.FrameMsg(frame));
     }
 
+    /** @throws WireException if not connected or the entity is outside 0..4294967295 (nothing is sent then) */
     public synchronized void spawn(Control.Spawn spawn) throws WireException {
         sendControl(spawn);
     }
 
+    /** @throws WireException if not connected or the entity is outside 0..4294967295 (nothing is sent then) */
     public synchronized void despawn(long entity) throws WireException {
         sendControl(new Control.Despawn(entity));
     }
@@ -1033,7 +1041,11 @@ public final class Link implements AutoCloseable {
         if (role == Role.HOST) this.focus = focus;
     }
 
-    /** Tells the peer about a pixel file (the {@code frame_channel} line of CONTRACT.md section 8). */
+    /**
+     * Tells the peer about a pixel file (the {@code frame_channel} line of CONTRACT.md section 8).
+     *
+     * @throws WireException if not connected or width, height or slots is outside 0..4294967295 (nothing is sent then)
+     */
     public synchronized void announceFrames(Control.FrameChannel channel) throws WireException {
         sendControl(channel);
     }
@@ -1045,6 +1057,15 @@ public final class Link implements AutoCloseable {
 
     private void sendControl(Control c) throws WireException {
         if (!(conn instanceof Live)) throw new WireException("not connected");
+        // The receiver refuses these numbers outside a u32 and ends the session: refuse them here, with nothing sent.
+        if (c instanceof Control.Spawn) u32("entity", ((Control.Spawn) c).entity());
+        else if (c instanceof Control.Despawn) u32("entity", ((Control.Despawn) c).entity());
+        else if (c instanceof Control.FrameChannel) {
+            Control.FrameChannel f = (Control.FrameChannel) c;
+            u32("width", f.width());
+            u32("height", f.height());
+            u32("slots", f.slots());
+        }
         Live live = (Live) conn;
         if (!live.ctl.queue(c)) throw new WireException("control line too long");
         linesSent++;
@@ -1059,6 +1080,10 @@ public final class Link implements AutoCloseable {
             end(err, false);
             throw new WireException("not connected");
         }
+    }
+
+    private static void u32(String name, long value) throws WireException {
+        if (value < 0 || value > 0xFFFFFFFFL) throw new WireException("bad value: " + name + " " + value + " is outside 0..4294967295");
     }
 
     /**
