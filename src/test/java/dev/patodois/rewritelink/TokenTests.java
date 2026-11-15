@@ -18,6 +18,7 @@ import java.nio.file.Path;
 import java.nio.file.attribute.PosixFilePermissions;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.List;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
@@ -364,6 +365,36 @@ final class TokenTests {
                         check(Files.exists(f), "a file a guest would refuse (mode 0644) stays");
                     } finally {
                         c.close();
+                    }
+                }
+            } finally {
+                cleanup(dir);
+            }
+        });
+
+        test("endpoint file: a guest says in lastError why it made no attempt, with no event and no file contents", () -> {
+            Path dir = tempDir();
+            try {
+                Path f = dir.resolve("ep.json");
+                LinkConfig gc = new LinkConfig("G");
+                gc.endpointFile = f;
+                try (Link guest = Link.guest(gc)) {
+                    eq(guest.poll(), Collections.emptyList(), "no event for a missing file");
+                    eq(guest.lastError(), "the endpoint file does not exist", "lastError for a missing file");
+                }
+                Files.write(f, "{\"control_port\":Zebra-secret}\n".getBytes(StandardCharsets.UTF_8));
+                if (posix()) Files.setPosixFilePermissions(f, PosixFilePermissions.fromString("rw-------"));
+                try (Link guest = Link.guest(gc)) {
+                    eq(guest.poll(), Collections.emptyList(), "no event for a malformed file");
+                    eq(guest.lastError(), "the endpoint file is not a JSON object", "lastError for a malformed file");
+                }
+                if (posix()) {
+                    Files.delete(f);
+                    Endpoint.write(f, 47801, T);
+                    Files.setPosixFilePermissions(f, PosixFilePermissions.fromString("rw-r--r--"));
+                    try (Link guest = Link.guest(gc)) {
+                        eq(guest.poll(), Collections.emptyList(), "no event for a file others can read");
+                        eq(guest.lastError(), "the endpoint file is accessible to the group or to others", "lastError for mode 0644");
                     }
                 }
             } finally {

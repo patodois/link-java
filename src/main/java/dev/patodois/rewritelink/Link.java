@@ -384,7 +384,10 @@ public final class Link implements AutoCloseable {
     private boolean closed;
     private String lastError;
 
-    /** Latest sanitized local control error, or null after a successful TCP connection. */
+    /**
+     * Latest local error, or null after a successful TCP connection: a refused or missing endpoint file (the reason, never
+     * its contents), a closed UDP channel or listener, a control line of our own that is too long. Never a token.
+     */
     public synchronized String lastError() { return lastError; }
 
     private Link(Role role, LinkConfig cfg) throws IOException {
@@ -571,12 +574,13 @@ public final class Link implements AutoCloseable {
             String attemptToken = token;
             if (endpointFile != null) {
                 // Read before every attempt: the host may have restarted with another port and token. No file, or a
-                // refused one: no attempt this time, no event, try again after the reconnect delay.
+                // refused one: no attempt this time, no event, try again after the reconnect delay; lastError says why.
                 try {
                     Endpoint ep = Endpoint.read(endpointFile);
                     port = ep.controlPort();
                     attemptToken = ep.token();
                 } catch (IOException | RuntimeException e) {
+                    lastError = endpointError(e);
                     conn = new Idle(now + reconnectMs);
                     return;
                 }
@@ -611,6 +615,17 @@ public final class Link implements AutoCloseable {
                 abortConnect(c, now);
             }
         }
+    }
+
+    /**
+     * Why the endpoint file was not used, for {@link #lastError()}. {@link Endpoint#read} words its own refusals without
+     * quoting the file; other exceptions (from the file system) are named by their class only, since their messages hold
+     * the path.
+     */
+    private static String endpointError(Exception e) {
+        if (e instanceof java.nio.file.NoSuchFileException) return "the endpoint file does not exist";
+        if (e.getClass() == IOException.class && e.getMessage() != null) return e.getMessage();
+        return "the endpoint file cannot be read (" + e.getClass().getSimpleName() + ")";
     }
 
     private void abortConnect(Connecting c, long now) {
