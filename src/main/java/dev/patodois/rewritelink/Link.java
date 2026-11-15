@@ -74,6 +74,8 @@ public final class Link implements AutoCloseable {
     private final Path endpointFile;
     /** Host: whether this link wrote {@link #endpointFile} and has not removed it yet. */
     private boolean endpointWritten;
+    /** Host: the control port written into {@link #endpointFile}. */
+    private int endpointPort;
 
     private Conn conn;
     private final List<Closing> closing = new ArrayList<>();
@@ -424,7 +426,9 @@ public final class Link implements AutoCloseable {
             }
             if (role == Role.HOST && endpointFile != null) {
                 // Only after the bind: a host that lost the port to someone else writes nothing (CONTRACT.md 6.2).
-                Endpoint.write(endpointFile, ((InetSocketAddress) l.getLocalAddress()).getPort(), token);
+                int bound = ((InetSocketAddress) l.getLocalAddress()).getPort();
+                Endpoint.write(endpointFile, bound, token);
+                endpointPort = bound;
                 endpointWritten = true;
             }
         } catch (IOException | RuntimeException e) {
@@ -1103,8 +1107,9 @@ public final class Link implements AutoCloseable {
             // nothing to do
         }
         if (endpointWritten) {
+            // Only if it is still this host's file: another host may have written the same path since.
             endpointWritten = false;
-            Endpoint.delete(endpointFile);
+            Endpoint.deleteIfOwn(endpointFile, endpointPort, tokenBytes);
         }
     }
 }

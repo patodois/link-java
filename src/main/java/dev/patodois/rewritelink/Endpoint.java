@@ -26,7 +26,8 @@ import java.util.Set;
 /**
  * The endpoint file of contract revision 6 (CONTRACT.md 6.2): how a host hands its control port and its token to a
  * guest that runs as the same user. The file holds {@code {"control_port":N,"token":"..."}}. A host that is given an
- * {@link LinkConfig#endpointFile} writes it after binding and removes it when it closes; a guest given one reads it
+ * {@link LinkConfig#endpointFile} writes it after binding and removes it when it closes, if the file still holds its port
+ * and token; a guest given one reads it
  * before every connection attempt. These helpers are public for applications that want to do it themselves.
  *
  * <p>Nothing here puts the token into an exception message, and {@link #toString()} hides it.
@@ -232,6 +233,22 @@ public final class Endpoint {
 
     // ---------------------------------------------------------------------------------------------
     // Removing
+
+    /**
+     * Removes the endpoint file only if it is still the one a host wrote: a file a guest would accept ({@link #read})
+     * that holds {@code controlPort} and {@code token} (compared in constant time). Another host's file, a file that is
+     * not an endpoint file and one that cannot be read stay. Best effort: errors are ignored. Another process can still
+     * replace the file between the check and the removal.
+     */
+    static void deleteIfOwn(Path path, int controlPort, byte[] token) {
+        try {
+            Endpoint e = read(path);
+            boolean own = e.controlPort == controlPort & Tokens.equal(e.token.getBytes(StandardCharsets.UTF_8), token);
+            if (own) Files.deleteIfExists(path);
+        } catch (IOException | RuntimeException ignored) {
+            // not this host's file, or not readable: leave it
+        }
+    }
 
     /** Removes the endpoint file; best effort (a missing file or an error is ignored). */
     public static void delete(Path path) {

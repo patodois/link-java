@@ -74,7 +74,7 @@ guest with no token sends none. Two new settings in `LinkConfig`, both `null` by
   `IllegalArgumentException`.
 - `endpointFile` (`java.nio.file.Path`): a host writes `{"control_port":N,"token":"..."}` there once it has bound its
   control port (with the port it really got; with `token == null` it first makes one) and removes the file when it
-  closes; if the file cannot be written, `Link.host` throws `IOException` and the port is released. A guest reads
+  closes, if the file still holds that port and token; if the file cannot be written, `Link.host` throws `IOException` and the port is released. A guest reads
   the file before every connection attempt, the first and each reconnect, and uses its port and token; if the read
   fails it makes no attempt that time and tries again after `reconnectMs`.
 
@@ -103,8 +103,10 @@ file with the strict control-line parser; its errors never quote the file. Where
 view (Windows) the permission check is skipped; the directory's ACL is what keeps other users out (no test checks the ACL).
 The tests of this path run in CI on `windows-latest` (JDK 21, `./gradlew check`: the endpoint file tests and the shared
 endpoint vectors, 43 cases of which 4 skip themselves there: file modes and a FIFO), but nothing was run as two processes or in a
-game on Windows. `Link.close()` removes the file the link wrote; a JVM that dies leaves it behind (the token dies
-with it, the next host makes a new one).
+game on Windows. `Link.close()` removes the file the link wrote, and only that one: it reads the file first and deletes
+it only if a guest would accept it and it holds this host's port and token (compared in constant time), so a file another
+host has written to the same path since, a file that is not an endpoint file and one that cannot be read stay. A JVM that
+dies leaves its file behind (the token dies with it, the next host makes a new one).
 
 What the token protects, in two sentences: it keeps out other users of the machine and any process that cannot read the
 endpoint file, and it defeats a process that takes the control port before the host starts (the host's bind fails, so no

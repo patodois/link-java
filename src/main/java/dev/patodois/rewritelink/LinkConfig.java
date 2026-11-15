@@ -30,8 +30,8 @@ public final class LinkConfig {
     public String token;
     /**
      * Contract revision 6, default null. Host: after binding, the link writes this file with the control port it bound and
-     * the token (see {@link Endpoint}), and removes it when it closes; if the file cannot be written, creating the host
-     * fails. Guest: before every connection attempt the link reads the file and uses its port and token instead of
+     * the token (see {@link Endpoint}), and removes it when it closes if the file still holds that port and token (another
+     * host's file stays); if the file cannot be written, creating the host fails. Guest: before every connection attempt the link reads the file and uses its port and token instead of
      * {@link #controlPort} and {@link #token}; if the file cannot be read it makes no attempt that time.
      */
     public Path endpointFile;

@@ -301,6 +301,76 @@ final class TokenTests {
             }
         });
 
+        test("endpoint file: a closing host removes only its own file", () -> {
+            Path dir = tempDir();
+            try {
+                Path f = dir.resolve("ep.json");
+                LinkConfig ac = hostConfig(null);
+                ac.endpointFile = f;
+                LinkConfig bc = hostConfig(null);
+                bc.endpointFile = f;
+                Link a = Link.host(ac);
+                Link b = Link.host(bc); // the same path: b's file replaces a's
+                try {
+                    eq(Endpoint.read(f).controlPort(), b.controlPort(), "the file names the second host");
+                    a.close();
+                    check(Files.exists(f), "closing the first host leaves the second host's file");
+                    eq(Endpoint.read(f).controlPort(), b.controlPort(), "the file still names the second host");
+                } finally {
+                    a.close();
+                    b.close();
+                }
+                check(!Files.exists(f), "closing the second host removes its file");
+
+                // A file that is not this host's: other contents, the same port with another token, the host's own
+                // contents with a mode a guest refuses. Each one stays.
+                Link c = Link.host(ac);
+                List<String> kept = new ArrayList<>();
+                try {
+                    Files.delete(f);
+                    Files.write(f, "not an endpoint file\n".getBytes(StandardCharsets.UTF_8));
+                    if (posix()) Files.setPosixFilePermissions(f, PosixFilePermissions.fromString("rw-------"));
+                    c.close();
+                    if (Files.exists(f)) kept.add("other contents");
+                } finally {
+                    c.close();
+                }
+                Files.deleteIfExists(f);
+                c = Link.host(ac);
+                try {
+                    Endpoint.write(f, c.controlPort(), W);
+                    c.close();
+                    if (Endpoint.read(f).token().equals(W)) kept.add("another token");
+                } finally {
+                    c.close();
+                }
+                Files.deleteIfExists(f);
+                c = Link.host(ac);
+                try {
+                    String own = Endpoint.read(f).token();
+                    Endpoint.write(f, c.controlPort() == 1 ? 2 : 1, own);
+                    c.close();
+                    if (Files.exists(f)) kept.add("another port");
+                } finally {
+                    c.close();
+                }
+                eq(kept, Arrays.asList("other contents", "another token", "another port"), "files that stay");
+                if (posix()) {
+                    Files.deleteIfExists(f);
+                    c = Link.host(ac);
+                    try {
+                        Files.setPosixFilePermissions(f, PosixFilePermissions.fromString("rw-r--r--"));
+                        c.close();
+                        check(Files.exists(f), "a file a guest would refuse (mode 0644) stays");
+                    } finally {
+                        c.close();
+                    }
+                }
+            } finally {
+                cleanup(dir);
+            }
+        });
+
         test("revision 6: a host given a token and an endpoint file writes that token; a guest with the token but no file connects", () -> {
             Path dir = tempDir();
             try {
