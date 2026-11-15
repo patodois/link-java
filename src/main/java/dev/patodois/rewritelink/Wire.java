@@ -265,11 +265,17 @@ public final class Wire {
         }
 
 
-        /** A right-handed look-at camera with an OpenGL-style perspective projection. */
+        /**
+         * A right-handed look-at camera with an OpenGL-style perspective projection. The up direction is +Y; a camera
+         * that looks straight down or up has screen-up towards -Z or +Z instead (the way it would tilt from looking
+         * along -Z), since +Y gives no right vector there.
+         */
         public static Camera lookAt(float[] eye, float[] target, float fovY, float near, float far,
                                     int width, int height) {
             float[] f = normalize(sub(target, eye));
-            float[] s = normalize(cross(f, new float[] {0, 1, 0}));
+            float[] right = cross(f, new float[] {0, 1, 0});
+            if (dot(right, right) < 1e-10f) right = cross(f, new float[] {0, 0, f[1] < 0 ? -1 : 1});
+            float[] s = normalize(right);
             float[] u = cross(s, f);
             float[] view = {
                 s[0], u[0], -f[0], 0,

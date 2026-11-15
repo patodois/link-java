@@ -224,6 +224,25 @@ final class HardeningTests {
             check(d.toString().contains("depth=null"), "toString without depth: " + d);
         });
 
+        test("Camera.lookAt straight down or up gives a rigid view", () -> {
+            float[][][] cases = {
+                {{0, 10, 0}, {0, 0, 0}}, {{0, -3, 0}, {0, 5, 0}}, {{2, 7, -1}, {2, 1, -1}}, {{1, 2, 3}, {1, 2.0001f, 3}},
+            };
+            for (float[][] c : cases) {
+                Wire.Camera cam = Wire.Camera.lookAt(c[0], c[1], 1f, 0.1f, 100f, 16, 9);
+                float[] v = cam.view();
+                String what = java.util.Arrays.toString(c[0]) + " -> " + java.util.Arrays.toString(c[1]);
+                for (float x : v) check(Float.isFinite(x), "finite view for " + what);
+                // The rotation part must be orthonormal: each column has length 1 and the determinant is 1.
+                float det = v[0] * (v[5] * v[10] - v[9] * v[6]) - v[4] * (v[1] * v[10] - v[9] * v[2]) + v[8] * (v[1] * v[6] - v[5] * v[2]);
+                check(Math.abs(det - 1) < 1e-4, "determinant " + det + " for " + what);
+                float[] eye = cam.eye(), fwd = cam.forward();
+                for (int i = 0; i < 3; i++) check(Math.abs(eye[i] - c[0][i]) < 1e-3, "eye " + java.util.Arrays.toString(eye) + " for " + what);
+                float dir = Math.signum(c[1][1] - c[0][1]);
+                check(Math.abs(fwd[1] - dir) < 1e-4, "forward " + java.util.Arrays.toString(fwd) + " for " + what);
+            }
+        });
+
         test("disconnect(null) says bye with an empty reason", () -> {
             try (ReviewTests.Pair p = new ReviewTests.Pair()) {
                 p.guest.disconnect(null);
