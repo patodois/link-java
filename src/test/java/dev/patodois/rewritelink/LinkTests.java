@@ -20,8 +20,9 @@ import dev.patodois.rewritelink.Wire.Header;
 import dev.patodois.rewritelink.Wire.WireException;
 
 /**
- * Plain test runner (no dependencies): {@code java -cp build/classes/java/main:build/test-classes
- * dev.patodois.rewritelink.LinkTests}. Exits 1 if any test fails.
+ * Plain test runner (no dependencies): {@code java -cp build/classes/java/main:build/classes/java/test
+ * dev.patodois.rewritelink.LinkTests}, from the repository root. Exits 1 if any test fails.
+ * {@code -Drbl.testFilter=TEXT} runs only the tests whose name contains {@code TEXT}.
  */
 public final class LinkTests {
     private static int passed, failed;

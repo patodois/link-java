@@ -1,7 +1,7 @@
 # Pixel readers and presentation migration
 
-Contract revision 7 preserves protocol version 1, datagrams,
-file headers, slot offsets or depth layout. Writers retain their mapped publication path.
+Contract revision 7 keeps protocol version 1 and leaves the datagrams, the file header, the
+slot offsets and the depth layout unchanged. Writers retain their mapped publication path.
 
 ## Presenting frames
 

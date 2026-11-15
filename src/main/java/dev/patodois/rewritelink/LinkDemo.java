@@ -10,8 +10,9 @@ import java.util.List;
 import dev.patodois.rewritelink.Control.Role;
 
 /**
- * Command-line peer used for the interop tests against the Rust {@code fake_host} and
- * {@code fake_guest} examples. It plays either role with the same behaviour as those examples.
+ * Command-line stand-in host or guest, mirroring the Rust {@code fake_host} and {@code fake_guest}
+ * examples; it plays either role with the same behaviour as those examples. (The cross-language
+ * interop test uses {@code InteropPeer}, in the test sources.)
  *
  * <pre>
  *   java -cp build/classes/java/main dev.patodois.rewritelink.LinkDemo guest [--port 47800] [--seconds 6] [--frames]

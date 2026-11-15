@@ -29,7 +29,8 @@ import dev.patodois.rewritelink.Wire.WireException;
 
 /**
  * One side of a passthrough link (host or guest). Create it with {@link #host} or {@link #guest},
- * then call {@link #poll()} regularly; it never blocks. All public methods are synchronized, so a
+ * then call {@link #poll()} regularly; it does not wait for the network or the peer (a guest with an
+ * endpoint file reads that file before each connection attempt). All public methods are synchronized, so a
  * game thread may send while a helper thread polls (see {@link LinkRunner}).
  *
  * <p>Everything binds and connects to 127.0.0.1 only.

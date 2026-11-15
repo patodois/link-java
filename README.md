@@ -6,7 +6,7 @@ implementation of it, tested against the Rust reference peers (`fake_host`, `fak
 the [`rewrite-bridge`](https://crates.io/crates/rewrite-bridge) crate:
 `cargo install rewrite-bridge --version 0.4.0 --features link --examples`.
 
-**Adding this to a game.** Read the [guide to adding a game](https://github.com/patodois/rewrite-bridge/blob/main/docs/INTEGRATING.md) first: it says whether to build a host or a guest, and has a host loop and a guest loop compiled against this library as Java 8 bytecode and run against rewrite-bridge's `fake_host` and `fake_guest`. Not run in a server plugin; see "Use it in your project" below for the dependency.
+**Adding this to a game.** Read the [guide to adding a game](https://github.com/patodois/rewrite-bridge/blob/main/docs/INTEGRATING.md) first: it says whether to build a host or a guest, and has a host loop and a guest loop compiled against this library as Java 8 bytecode and run against rewrite-bridge's `fake_host` and `fake_guest`. The library has not been run in a server plugin. "Use it in your project" below gives the dependency.
 
 - No dependencies, no native code, nothing from any game. Package: `dev.patodois.rewritelink`.
 - **Java 8 or newer**: compiled with `javac --release 8`, so it loads on Minecraft 1.7.10 and 1.12.2
@@ -16,8 +16,10 @@ the [`rewrite-bridge`](https://crates.io/crates/rewrite-bridge) crate:
   (not `sealed`), so a `switch` over them needs a `default`; time stamps come from `Instant.now()`,
   which has microsecond resolution on Java 9 and later and millisecond resolution on Java 8.
 - Everything binds and connects to `127.0.0.1` only.
-- Non-blocking: `Link.poll()` never blocks, `Link` methods are synchronized so a game thread may
-  send while a helper thread polls (`LinkRunner` is that helper thread).
+- Non-blocking: `Link.poll()` does not wait for the network or the peer, and `Link` methods are
+  synchronized so a game thread may send while a helper thread polls (`LinkRunner` is that helper
+  thread). A guest with an endpoint file reads that small file before each connection attempt, and the
+  link prints one line to `System.err` once per session when the peer passes 1024 live entities.
 
 ## Migrating pixel consumers to 0.3.0
 
@@ -83,9 +85,17 @@ guest with no token sends none. Two new settings in `LinkConfig`, both `null` by
   fails it makes no attempt that time and tries again after `reconnectMs`.
 
 ```java
+// The directory must exist: the library creates none. ~/.cache/rewrite-link is the contract's place on Linux without
+// XDG_RUNTIME_DIR; macOS and Windows have their own (CONTRACT.md 6.2). On Unix, create it owner-only (0700).
+Path dir = Paths.get(System.getProperty("user.home"), ".cache", "rewrite-link");
+if (FileSystems.getDefault().supportedFileAttributeViews().contains("posix")) {
+    Files.createDirectories(dir, PosixFilePermissions.asFileAttribute(PosixFilePermissions.fromString("rwx------")));
+} else {
+    Files.createDirectories(dir);
+}
 // Host: the library makes a token (64 hex digits) and writes it, with the bound port, to a file only this user can read
 LinkConfig h = new LinkConfig("My Game");
-h.endpointFile = Paths.get(System.getProperty("user.home"), ".cache", "rewrite-link", "my-game.json");
+h.endpointFile = dir.resolve("my-game.json");
 // Guest: the same path, nothing else to configure
 LinkConfig g = new LinkConfig("My Rewrite");
 g.endpointFile = h.endpointFile;
@@ -106,7 +116,7 @@ cannot block it), refuses on POSIX a file with group or other permissions, refus
 file with the strict control-line parser; its errors never quote the file. Where the default file system has no POSIX
 view (Windows) the permission check is skipped; the directory's ACL is what keeps other users out (no test checks the ACL).
 The tests of this path run in CI on `windows-latest` (JDK 21, `./gradlew check`: the endpoint file tests and the shared
-endpoint vectors, 43 cases of which 4 skip themselves there: file modes and a FIFO), but nothing was run as two processes or in a
+endpoint vectors, 47 cases of which 4 skip themselves there: file modes and a FIFO), but nothing was run as two processes or in a
 game on Windows. `Link.close()` removes the file the link wrote, and only that one: it reads the file first and deletes
 it only if a guest would accept it and it holds this host's port and token (compared in constant time), so a file another
 host has written to the same path since, a file that is not an endpoint file and one that cannot be read stay. A JVM that
@@ -168,8 +178,9 @@ Revision 4: what the code review of both implementations changed, in the order o
   later print one `WARNING` about `sun.misc.Unsafe::invokeCleaner` on stderr at the first close;
   `--sun-misc-unsafe-memory-access=allow` silences it. On other systems the writer deletes the mapped file,
   leaves the mapping to the garbage collector and prints nothing (`wasUnmapped()` is then false).
-- **`Json`** accepts exactly what the Rust side's `serde_json` accepts: no leading zeros, unicode escapes
-  of exactly four hex digits with valid surrogate pairs, 127 levels of nesting.
+- **`Json`** accepts exactly what the Rust side's `serde_json` accepts, except a NUL escape (`\u0000`),
+  which the contract refuses in any string: no leading zeros, unicode escapes of exactly four hex digits
+  with valid surrogate pairs, 127 levels of nesting.
 - **`equals` / `hashCode`** of `Wire.Camera`, `Wire.Pose`, `Wire.CollisionChunk`,
   `LinkEvent.Collision` (and so `Wire.Decoded`) and `PixelFile.Frame` compare array contents. `Wire.encode` refuses a
   `chunk_index` that is not below `chunk_count`, and frame 0.
@@ -233,7 +244,7 @@ A Minecraft mod has to carry the library inside its own jar (jar-in-jar or `jarJ
 
 ### A host and a guest in about ten lines each
 
-Both sides poll once per frame or tick; `poll()` never blocks. The host is the game you play (it sends the camera), the guest
+Both sides poll once per frame or tick; `poll()` does not wait for the network or the peer. The host is the game you play (it sends the camera), the guest
 publishes an entity that the host draws. Everything runs on `127.0.0.1`, port 47800 by default.
 
 ```java
@@ -267,7 +278,7 @@ try (Link link = Link.guest(new LinkConfig("My Rewrite"))) {
 ## Build and test
 
 ```sh
-export JAVA_HOME=/opt/homebrew/opt/openjdk@25     # any JDK 9+ to build (javac --release 8); the jar runs on Java 8+
+export JAVA_HOME=/path/to/jdk                    # JDK 17 or newer: Gradle 9 needs it; javac --release 8 makes a Java 8 jar
 ./gradlew build --no-daemon                       # build/libs/link-java-<version>.jar, and the tests
 ./gradlew linkTests --no-daemon                   # just the tests
 ./gradlew demo --no-daemon --args="guest --port 47800 --orbit"
@@ -288,6 +299,8 @@ for Java 8 too and can run on a Java 8 runtime:
 ```sh
 java -cp build/classes/java/main:build/classes/java/test dev.patodois.rewritelink.LinkTests
 # a longer contention soak: add -Dlinkjava.contentionMs=20000
+# only the tests whose name contains a text (the Gradle tasks do not pass system properties on):
+java -Drbl.testFilter="endpoint file" -cp build/classes/java/main:build/classes/java/test dev.patodois.rewritelink.LinkTests
 ```
 
 ### Shared test vectors
@@ -322,7 +335,8 @@ java -cp build/classes/java/main:build/classes/java/test dev.patodois.rewritelin
 ```
 
 It prints log lines and, as its last line, `RBL-INTEROP-RESULT {json}`; the exit status is 0 when every check
-passed, 1 when one failed and 2 for a bad command line. This library has no counters, so `stats` is `null`.
+passed, 1 when one failed and 2 for a bad command line. `stats` is `null`: the peer does not report the counters
+that `Link` keeps (its public `datagramsSent`, `malformed`, `stale` and the others).
 With `--endpoint FILE` (host: `--port 0`) the host's library generates a token and writes the file, and the guest's
 library reads it; `--expect-unauthorized` (host) and `--wrong-token` (guest) run the refusal scenario. The result line has
 the keys `mode`, `connected` and `handshake_failed`, and the peer never prints a token.

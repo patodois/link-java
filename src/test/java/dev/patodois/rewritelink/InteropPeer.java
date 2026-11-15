@@ -23,8 +23,8 @@ import dev.patodois.rewritelink.Wire.WireException;
  * </pre>
  *
  * <p>It prints log lines of its own choosing and, as its last stdout line, {@code RBL-INTEROP-RESULT {json}}. The
- * exit status is 0 when every check passed, 1 when one failed, 2 for a bad command line. This library has no
- * counters, so {@code stats} in the result is {@code null}.
+ * exit status is 0 when every check passed, 1 when one failed, 2 for a bad command line. {@code stats} in the
+ * result is {@code null}: this peer does not report the counters {@link Link} keeps.
  *
  * <p>With {@code --endpoint} (contract revision 6, section 6.2) the host's library generates a token and writes the
  * file after binding, and the guest's library reads it before connecting; with {@code --expect-unauthorized} and

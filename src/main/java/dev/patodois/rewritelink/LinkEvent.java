@@ -53,6 +53,10 @@ public interface LinkEvent {
             return heartbeatMs;
         }
 
+        /**
+         * This side's effective watchdog for the session: the larger of its own {@link LinkConfig#timeoutMs} and four
+         * of the peer's heartbeats. It is not the {@code timeout_ms} the peer announced, which the link does not keep.
+         */
         public long timeoutMs() {
             return timeoutMs;
         }

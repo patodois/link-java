@@ -7,8 +7,9 @@ plugins {
 // Minecraft 1.7.10 and 1.12.2 (Java 8), 1.20.1 (Java 17), 26.x (Java 21 and up). `release` (javac
 // --release), not just source/target, compiles against the Java 8 class library, so a call to
 // anything newer (List.of, String.repeat, the absolute bulk ByteBuffer methods, VarHandle...) is a
-// compile error here instead of a NoSuchMethodError in someone's game. Needs JDK 9 or newer to
-// build; JDK 25 still supports --release 8, with an "obsolete" lint warning that is switched off.
+// compile error here instead of a NoSuchMethodError in someone's game. The Gradle wrapper (Gradle 9)
+// needs JDK 17 or newer to run; JDK 25 still supports --release 8, with an "obsolete" lint warning that
+// is switched off.
 tasks.withType(JavaCompile).configureEach {
 	options.release = 8
 	options.encoding = 'UTF-8'
