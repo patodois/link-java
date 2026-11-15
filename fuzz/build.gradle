@@ -2,8 +2,8 @@ plugins {
 	id 'java'
 }
 
-// Jazzer fuzz targets for link-java. This module is NOT built by the library's build, by CI or by JitPack, and
-// nothing in it ends up in the library's jar: the library stays Java 8 with no runtime dependency, and only this
+// Jazzer fuzz targets for link-java. This module is NOT built by the library's build or by JitPack (CI replays its
+// corpus in a job of its own), and nothing in it ends up in the library's jar: the library stays Java 8 with no runtime dependency, and only this
 // module depends on Jazzer and JUnit. Run it from the repository root:
 //
 //   ./gradlew -p fuzz test                      regression run: replays the committed corpus, a few seconds

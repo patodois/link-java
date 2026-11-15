@@ -1,8 +1,9 @@
 # Fuzzing link-java
 
 Jazzer (JUnit integration) targets for every decoder of bytes that come from a peer or from the endpoint file, and for the
-handshake. This directory is a Gradle build of its own: the library's `./gradlew check`, its jar, JitPack and CI never
-build or run it, the library stays Java 8, and it gains no runtime dependency. Only this build needs Jazzer, JUnit and a
+handshake. This directory is a Gradle build of its own: the library's `./gradlew check`, its jar and JitPack never
+build or run it, the library stays Java 8, and it gains no runtime dependency. CI replays the committed corpus
+(`./gradlew -p fuzz test`) in a job of its own. Only this build needs Jazzer, JUnit and a
 JDK 21 (the toolchain is set in `build.gradle`).
 
 | Class | Target | What it feeds |

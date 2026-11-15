@@ -6,7 +6,8 @@ It supplies host and guest roles for protocol v1, contract revision 7, and is bu
 ## Toolchain, build and CI
 
 - The README/build script require JDK 9+ to compile with `javac --release 8`; the jar runs on Java 8+.
-- CI runs the Gradle wrapper with Temurin JDK 21 on Linux, macOS and Windows.
+- CI runs the Gradle wrapper with Temurin JDK 21 on Linux, macOS and Windows, then the compiled tests on a Java 8
+  runtime (Zulu 8), and replays the fuzz corpus with `./gradlew -p fuzz test` on Linux.
 - The library has no dependencies or native code.
 - Exact CI verification command:
 
