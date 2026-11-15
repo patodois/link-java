@@ -11,8 +11,9 @@ import java.nio.file.LinkOption;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
 import java.nio.file.attribute.BasicFileAttributes;
-import java.util.concurrent.atomic.AtomicInteger;
+import java.util.Arrays;
 import java.util.Objects;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * The shared-memory pixel file of CONTRACT.md section 9.6 (revision 7, with the optional depth
@@ -72,7 +73,10 @@ public final class PixelFile {
         FENCE.incrementAndGet();
     }
 
-    /** One frame copied out of a slot. {@code depth} is null when the file has no usable depth plane. */
+    /**
+     * One frame copied out of a slot. {@code depth} is null when the file has no usable depth plane. Two frames are equal
+     * when their numbers and their array contents are; {@code toString} gives the arrays' lengths, not their contents.
+     */
     public static final class Frame {
         private final long frame;
         private final long timeUs;
@@ -127,7 +131,7 @@ public final class PixelFile {
             Frame that = (Frame) o;
             return frame == that.frame && timeUs == that.timeUs && cameraSeq == that.cameraSeq
                     && width == that.width && height == that.height
-                    && Objects.equals(rgba, that.rgba) && Objects.equals(depth, that.depth);
+                    && Arrays.equals(rgba, that.rgba) && Arrays.equals(depth, that.depth);
         }
 
         @Override
@@ -138,15 +142,16 @@ public final class PixelFile {
             h = 31 * h + Integer.hashCode(cameraSeq);
             h = 31 * h + Integer.hashCode(width);
             h = 31 * h + Integer.hashCode(height);
-            h = 31 * h + Objects.hashCode(rgba);
-            h = 31 * h + Objects.hashCode(depth);
+            h = 31 * h + Arrays.hashCode(rgba);
+            h = 31 * h + Arrays.hashCode(depth);
             return h;
         }
 
         @Override
         public String toString() {
             return "Frame[frame=" + frame + ", timeUs=" + timeUs + ", cameraSeq=" + cameraSeq + ", width=" + width
-                    + ", height=" + height + ", rgba=" + rgba + ", depth=" + depth + "]";
+                    + ", height=" + height + ", rgba=" + (rgba == null ? "null" : rgba.length + " bytes")
+                    + ", depth=" + (depth == null ? "null" : depth.length + " floats") + "]";
         }
     }
 

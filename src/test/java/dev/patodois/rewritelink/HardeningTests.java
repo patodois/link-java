@@ -211,6 +211,19 @@ final class HardeningTests {
             }
         });
 
+        test("PixelFile.Frame is equal when its arrays are, and prints their lengths", () -> {
+            PixelFile.Frame a = new PixelFile.Frame(1, 2, 3, 2, 1, new byte[] {1, 2, 3, 4, 5, 6, 7, 8}, new float[] {1f, 2f});
+            PixelFile.Frame b = new PixelFile.Frame(1, 2, 3, 2, 1, new byte[] {1, 2, 3, 4, 5, 6, 7, 8}, new float[] {1f, 2f});
+            PixelFile.Frame c = new PixelFile.Frame(1, 2, 3, 2, 1, new byte[] {1, 2, 3, 4, 5, 6, 7, 9}, new float[] {1f, 2f});
+            PixelFile.Frame d = new PixelFile.Frame(1, 2, 3, 2, 1, new byte[] {1, 2, 3, 4, 5, 6, 7, 8}, null);
+            eq(a, b, "equal contents");
+            eq(a.hashCode(), b.hashCode(), "hash codes");
+            check(!a.equals(c) && !a.equals(d), "other pixels or no depth");
+            check(!a.toString().contains("[B@") && a.toString().contains("8 bytes") && a.toString().contains("2 floats"),
+                    "toString: " + a);
+            check(d.toString().contains("depth=null"), "toString without depth: " + d);
+        });
+
         test("disconnect(null) says bye with an empty reason", () -> {
             try (ReviewTests.Pair p = new ReviewTests.Pair()) {
                 p.guest.disconnect(null);

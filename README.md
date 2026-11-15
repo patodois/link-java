@@ -170,8 +170,8 @@ Revision 4: what the code review of both implementations changed, in the order o
   leaves the mapping to the garbage collector and prints nothing (`wasUnmapped()` is then false).
 - **`Json`** accepts exactly what the Rust side's `serde_json` accepts: no leading zeros, unicode escapes
   of exactly four hex digits with valid surrogate pairs, 127 levels of nesting.
-- **`equals` / `hashCode`** of `Wire.Camera`, `Wire.Pose`, `Wire.CollisionChunk` and
-  `LinkEvent.Collision` (and so `Wire.Decoded`) compare array contents. `Wire.encode` refuses a
+- **`equals` / `hashCode`** of `Wire.Camera`, `Wire.Pose`, `Wire.CollisionChunk`,
+  `LinkEvent.Collision` (and so `Wire.Decoded`) and `PixelFile.Frame` compare array contents. `Wire.encode` refuses a
   `chunk_index` that is not below `chunk_count`, and frame 0.
 - Datagrams are accepted from exactly `127.0.0.1:<the peer's udp_port>`.
 
