@@ -27,7 +27,8 @@ before checking slots. Present frames with `reader.readLatest(frameReady, wantDe
 Only successful copies advance order; `staleReads()` counts duplicate/older nonzero frames.
 A null announcement returns null without changing counters. On a new channel, session loss,
 or `reader.isGone()`, close the old reader and clear its cached image, even when opening a
-replacement fails. Discard asynchronous results from replaced readers. This minor version
+replacement fails. Discard asynchronous results from replaced readers. A reader's reads and
+`close()` lock it, so closing it on another thread waits for a read in progress. This minor version
 is intentionally incompatible with old presentation consumers despite unchanged signatures.
 Unix readers use bounded positional I/O and never invoke Unsafe when closing. Windows keeps
 a read-only map. See [PIXEL-IO.md](PIXEL-IO.md).

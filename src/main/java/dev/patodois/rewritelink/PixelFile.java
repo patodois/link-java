@@ -162,7 +162,10 @@ public final class PixelFile {
     // ------------------------------------------------------------------ reader
 
     /**
-     * Reads with positional I/O on Unix and a read-only map on Windows. Not thread-safe: use one reader per thread.
+     * Reads with positional I/O on Unix and a read-only map on Windows. Use one reader per thread. The reads,
+     * {@link #isGone()} and {@link #close()} lock the reader, so a {@code close()} on another thread (when a new
+     * {@code frame_channel} replaces this file) waits for a read in progress instead of unmapping, on Windows, memory
+     * that the read is still copying.
      * {@link #open(Path)} checks the file before and after opening it without following links; a peer that swaps the
      * file for a FIFO before the open, or swaps another regular file in and back between the open and the second check,
      * is not detected (Java has neither a non-blocking open nor an {@code fstat} of an open channel).
@@ -209,7 +212,7 @@ public final class PixelFile {
          * truncation after this check without touching peer-owned pages. Windows mappings prevent
          * ordinary file truncation. Writers must still obey the contract's lifetime rules.
          */
-        public boolean isGone() {
+        public synchronized boolean isGone() {
             if (gone) return true;
             boolean interrupted = Thread.interrupted(); // see readSlot
             try {
@@ -324,7 +327,7 @@ public final class PixelFile {
         /** Presentation copy: only a valid slot advances order within this file. On every channel
          * replacement open a new reader and invalidate the previous image, even if opening fails.
          * The read overloads remain unordered low-level copies. */
-        public Frame readLatest(Wire.FrameReady ready, boolean wantDepth) {
+        public synchronized Frame readLatest(Wire.FrameReady ready, boolean wantDepth) {
             if (ready == null) return null;
             if (ready.frame() != 0 && Long.compareUnsigned(ready.frame(), newest) <= 0) { skippedStale++; skippedOtherFrame++; return null; }
             Frame f = read(ready, wantDepth);
@@ -337,7 +340,7 @@ public final class PixelFile {
          * datagram's own {@code frame}, {@code slot}, {@code width} and {@code height}. Use {@link #readLatest(Wire.FrameReady, boolean)} for presentation; this raw copy
          * permits re-reading and does not enforce presentation order.
          */
-        public Frame read(Wire.FrameReady ready, boolean wantDepth) {
+        public synchronized Frame read(Wire.FrameReady ready, boolean wantDepth) {
             if (ready == null) return null;
             return read(ready.frame(), ready.slot(), ready.width(), ready.height(), wantDepth);
         }
@@ -351,7 +354,7 @@ public final class PixelFile {
          * the datagram's. The slot need not be {@code frame % slots}: a slot the writer has numbered
          * otherwise is read like any other.
          */
-        public Frame read(long frame, int slot, int width, int height, boolean wantDepth) {
+        public synchronized Frame read(long frame, int slot, int width, int height, boolean wantDepth) {
             if (width < 1 || height < 1 || width > this.width || height > this.height) return null;
             return readSlot(frame, slot, width, height, wantDepth);
         }
@@ -363,7 +366,7 @@ public final class PixelFile {
          * cannot skip a frame whose slot header and datagram disagree. Use the overloads that take the size
          * of the {@code Frame} datagram.
          */
-        public Frame read(long frame, int slot, boolean wantDepth) {
+        public synchronized Frame read(long frame, int slot, boolean wantDepth) {
             return readSlot(frame, slot, 0, 0, wantDepth);
         }
 
@@ -505,7 +508,7 @@ public final class PixelFile {
         }
 
         @Override
-        public void close() {
+        public synchronized void close() {
             try {
                 channel.close();
                 // Owned direct scratch is reclaimed by the JVM. Do not invoke Unsafe or
