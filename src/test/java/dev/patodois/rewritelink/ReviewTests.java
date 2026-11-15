@@ -467,13 +467,15 @@ final class ReviewTests {
         });
 
         // ----- L3
-        test("review L3: closing a writer unmaps its file before deleting it, and a closed writer refuses writes", () -> {
+        test("review L3: closing a writer unmaps its file (on Windows) before deleting it, and a closed writer refuses writes", () -> {
             Path p = temp("close.frames");
             PixelFile.Writer w = new PixelFile.Writer(p, 4, 2, 2, false);
             w.write(new byte[32], null, 4, 2, 0, 1L);
             check(!w.wasUnmapped(), "mapped while open");
             w.close();
-            check(w.wasUnmapped(), "the mapping was released on this JVM (java.version " + System.getProperty("java.version") + ")");
+            boolean windows = System.getProperty("os.name", "").startsWith("Windows");
+            // Only Windows needs the mapping released before the delete; elsewhere the writer leaves it to the collector.
+            eq(w.wasUnmapped(), windows, "the mapping was released (java.version " + System.getProperty("java.version") + ")");
             check(!Files.exists(p), "deleted");
             boolean threw = false;
             try {

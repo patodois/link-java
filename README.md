@@ -57,7 +57,7 @@ pixel file larger than 2147483647 bytes, for example 4096 x 4096 with depth and 
 The Unix `Reader` maps nothing and reads larger files.
 
 The seqlock has to work without `VarHandle` and without `sun.misc.Unsafe`, which Java 8 does not offer
-or this library does not want. (Writers and Windows mapped-reader cleanup may reach for Unsafe, by
+or this library does not want. (Windows writers and Windows mapped-reader cleanup may reach for Unsafe, by
 reflection and only to unmap the file; see "Contract revisions 4 and 5" below.) Writers and Windows readers access `lock` through a `LongBuffer` view of the mapping
 (one aligned 64-bit access on every platform; `ByteBuffer.getLong` can be assembled byte by byte on a
 Java 8 that does not know the CPU), and the contract's release and acquire fences are a full fence made
@@ -162,11 +162,12 @@ Revision 4: what the code review of both implementations changed, in the order o
   Java cannot open a FIFO without blocking, so the type is checked before the open.
 - **`PixelFile.Writer`** creates its file with `CREATE_NEW`, validates its arguments
   (`IllegalArgumentException`, nothing written, no frame number used), always leaves the slot lock even,
-  and refuses writes after `close()`. `close()` unmaps the buffer before deleting the file, through
-  `sun.misc.Unsafe.invokeCleaner` (Java 9+) or the buffer's cleaner (Java 8), both by reflection. Where
-  neither works the file outlives the writer on Windows. JDK 24 and later print one `WARNING` about
-  `sun.misc.Unsafe::invokeCleaner` on stderr at the first close; `--sun-misc-unsafe-memory-access=allow`
-  silences it.
+  and refuses writes after `close()`. On Windows, where a mapped file cannot be deleted, `close()` unmaps
+  the buffer before deleting the file, through `sun.misc.Unsafe.invokeCleaner` (Java 9+) or the buffer's
+  cleaner (Java 8), both by reflection; where neither works the file outlives the writer. There JDK 24 and
+  later print one `WARNING` about `sun.misc.Unsafe::invokeCleaner` on stderr at the first close;
+  `--sun-misc-unsafe-memory-access=allow` silences it. On other systems the writer deletes the mapped file,
+  leaves the mapping to the garbage collector and prints nothing (`wasUnmapped()` is then false).
 - **`Json`** accepts exactly what the Rust side's `serde_json` accepts: no leading zeros, unicode escapes
   of exactly four hex digits with valid surrogate pairs, 127 levels of nesting.
 - **`equals` / `hashCode`** of `Wire.Camera`, `Wire.Pose`, `Wire.CollisionChunk` and

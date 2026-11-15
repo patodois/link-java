@@ -84,6 +84,14 @@ public final class PixelSafety {
             if (r.read(new Wire.FrameReady(1,1,101,4,2),false)==null) throw new AssertionError("fixture read failed");
         }
     }
+    static void writerClose() throws Exception {
+        Path path = Files.createTempDirectory("writer-close").resolve("f.frames");
+        PixelFile.Writer w = new PixelFile.Writer(path, 4, 2, 3, false);
+        w.write(new byte[32], null, 4, 2, 0, 1);
+        w.close();
+        if (Files.exists(path)) throw new AssertionError("the writer's file is still there");
+        Files.delete(path.getParent());
+    }
     static void apiTests() {
         LinkTests.test("pixel widths can shrink and grow without stale limits or pixels", () -> {
             for(boolean wantDepth:new boolean[]{false,true}) {
@@ -147,6 +155,15 @@ public final class PixelSafety {
             int exit=p.waitFor();
             LinkTests.check(exit==0 && out.indexOf("Unsafe")<0,"reader close must be silent: "+out);
         });
+        LinkTests.test("writer close on Unix does not invoke Unsafe", () -> {
+            if (System.getProperty("os.name").startsWith("Windows")) return;
+            String java = Paths.get(System.getProperty("java.home"),"bin","java").toString();
+            Process p = new ProcessBuilder(java,"-Djava.io.tmpdir="+System.getProperty("java.io.tmpdir"),"-cp",System.getProperty("java.class.path"),PixelSafety.class.getName(),"writer-close").redirectErrorStream(true).start();
+            StringBuilder out = new StringBuilder();
+            try (BufferedReader r = new BufferedReader(new InputStreamReader(p.getInputStream(),"UTF-8"))) { String line; while((line=r.readLine())!=null) out.append(line).append('\n'); }
+            int exit=p.waitFor();
+            LinkTests.check(exit==0 && out.indexOf("Unsafe")<0,"writer close must be silent: "+out);
+        });
         LinkTests.test("presentation state belongs to each file and accepts a null announcement as a miss", () -> {
             Path dir=Files.createTempDirectory("two-files");
             try(PixelFile.Writer a=new PixelFile.Writer(dir.resolve("a.frames"),2,2,3,false);
@@ -198,6 +215,7 @@ public final class PixelSafety {
         if(args.length>0 && args[0].equals("child")) child();
         else if(args.length>0 && args[0].equals("bench")) bench();
         else if(args.length>0 && args[0].equals("reader-close")) readerClose();
+        else if(args.length>0 && args[0].equals("writer-close")) writerClose();
         else if(args.length>0 && args[0].equals("api")) { apiTests(); if(LinkTests.failures()!=0) System.exit(1); }
         else { run(); if (LinkTests.failures() != 0) System.exit(1); }
     }

@@ -529,13 +529,15 @@ public final class PixelFile {
      * {@link #close()}. Writers are thread-safe, but one thread should do the writing.
      *
      * <p><b>Windows:</b> a mapped file cannot be deleted while this process maps it. {@link #close()}
-     * therefore unmaps the buffer first, which Java offers no public way to do; it uses
+     * therefore unmaps the buffer first there, which Java offers no public way to do; it uses
      * {@code sun.misc.Unsafe.invokeCleaner} on Java 9 and later and the buffer's internal cleaner on
      * Java 8, both by reflection. On a JVM where neither works the mapping lives until garbage
      * collection, the delete fails quietly, and the file outlives the writer on Windows (the temp
-     * directory's cleanup then removes it). Elsewhere the delete always works. JDK 24 and later print
-     * one warning about {@code sun.misc.Unsafe::invokeCleaner} on stderr at the first close
-     * ({@code --sun-misc-unsafe-memory-access=allow} silences it).
+     * directory's cleanup then removes it). On Windows, JDK 24 and later print one warning about
+     * {@code sun.misc.Unsafe::invokeCleaner} on stderr at the first close
+     * ({@code --sun-misc-unsafe-memory-access=allow} silences it). Elsewhere a mapped file can be deleted,
+     * so the writer does not unmap explicitly (the mapping goes with the garbage collector) and prints
+     * nothing.
      */
     public static final class Writer implements AutoCloseable {
         private final Path path;
@@ -655,7 +657,7 @@ public final class PixelFile {
             return frame;
         }
 
-        /** Unmaps the file (see the class comment), closes it and deletes it. Closing twice is harmless. */
+        /** Closes the file, unmaps it on Windows (see the class comment) and deletes it. Closing twice is harmless. */
         @Override
         public synchronized void close() {
             if (closed) return;
@@ -665,7 +667,7 @@ public final class PixelFile {
             } catch (IOException ignored) {
                 // nothing to do
             }
-            unmapped = unmap(map);
+            if (WINDOWS) unmapped = unmap(map); // deleting a mapped file works elsewhere
             try {
                 Files.deleteIfExists(path);
             } catch (IOException ignored) {
@@ -673,7 +675,10 @@ public final class PixelFile {
             }
         }
 
-        /** Whether {@link #close()} managed to unmap the buffer (always false before it is called). */
+        /**
+         * Whether {@link #close()} managed to unmap the buffer, which it tries on Windows only (always false before it is
+         * called, and on other systems).
+         */
         public synchronized boolean wasUnmapped() {
             return unmapped;
         }

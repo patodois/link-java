@@ -49,7 +49,8 @@ C# preadv binding use bounded 32 KiB packed spans under the same limits, then pe
 Rust/C retry interruptions and continue partial vectored reads, including within a vector.
 
 Java owned direct scratch is reclaimed by the JVM without invoking Unsafe on Unix reader
-close. The writer's existing cleaner path is unchanged. C# caches SafeFileHandle and uses
+close. The Java writer unmaps through that cleaner path on Windows only, before deleting
+its file; elsewhere it deletes the mapped file and leaves the mapping to the collector. C# caches SafeFileHandle and uses
 native positional I/O when available; missing or unsupported bindings switch to safe
 FileStream copies with explicit positions and buffering disabled. I/O/provider exceptions
 inside CopyAt are contained as misses. Both missing pread and missing preadv bindings are covered by fault injection; this
