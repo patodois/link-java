@@ -412,9 +412,9 @@ public final class PixelFile {
         private boolean copyPlane(long at, int stride, int row, int height, byte[] rgba, float[] depth) throws IOException {
             int span = Math.toIntExact((long)(height - 1) * stride + row);
             if(stride<=16*1024 && stride!=row && height>1 && span<=(long)row*height*4) return vectorPlane(at,stride,row,height,rgba,depth);
-            boolean coalesce = stride == row || (stride <= 16*1024 && span <= (long)row * height * 4);
-            int blockBytes = Math.max(row, stride == row ? 1024 * 1024 : 32 * 1024);
-            int blockRows = coalesce ? Math.min(height, (blockBytes - row) / stride + 1) : 1;
+            // Packed rows (stride == row) are read in blocks of up to 1 MiB. A cropped plane that did not take the vector
+            // path above (a stride over 16 KiB, a single row, or padding over four times the pixels) is read row by row.
+            int blockRows = stride == row ? Math.min(height, ((1 << 20) - row) / stride + 1) : 1;
             int capacity = (blockRows - 1) * stride + row;
             if (io.capacity() < capacity) io = ByteBuffer.allocateDirect(capacity).order(ByteOrder.LITTLE_ENDIAN);
             for (int start = 0; start < height; start += blockRows) {
