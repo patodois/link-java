@@ -434,6 +434,14 @@ public final class PixelFile {
             }
             return true;
         }
+        /**
+         * Whether a slot header ({@code f}, {@code w}, {@code h}) holds the announced frame with a size inside the file's
+         * and, when the datagram gave one ({@code dw} not 0), the datagram's size.
+         */
+        private boolean slotOk(long f, int w, int h, long frame, int dw, int dh) {
+            return f == frame && w >= 1 && h >= 1 && w <= width && h <= height && (dw == 0 || (w == dw && h == dh));
+        }
+
         private Frame readFile(long frame, int slot, int dw, int dh, boolean wantDepth) {
             try {
                 long base = HEADER_LEN + (long)slot * slotSize;
@@ -443,7 +451,7 @@ public final class PixelFile {
                 if ((l1 & 1) != 0) { skippedBusy++; return null; }
                 long f = head.getLong(8), time = head.getLong(16);
                 int cam = head.getInt(24), w = head.getInt(28), h = head.getInt(32);
-                if (f != frame || w < 1 || h < 1 || w > width || h > height || (dw != 0 && (w != dw || h != dh))) { skippedOtherFrame++; return null; }
+                if (!slotOk(f, w, h, frame, dw, dh)) { skippedOtherFrame++; return null; }
                 byte[] rgba = new byte[w*h*4];
                 if (!copyPlane(base + SLOT_HEADER_LEN, stride, w*4, h, rgba, null)) { gone = true; skippedGone++; return null; }
                 float[] depth = null;
@@ -486,7 +494,7 @@ public final class PixelFile {
             }
             long f = map.getLong(base + 8), timeUs = map.getLong(base + 16);
             int camSeq = map.getInt(base + 24), w = map.getInt(base + 28), h = map.getInt(base + 32);
-            if (f != frame || w < 1 || h < 1 || w > width || h > height || (dw != 0 && (w != dw || h != dh))) {
+            if (!slotOk(f, w, h, frame, dw, dh)) {
                 skippedOtherFrame++;
                 return null;
             }
