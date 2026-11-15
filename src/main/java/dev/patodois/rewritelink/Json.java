@@ -100,7 +100,8 @@ final class Json {
                 case 'n': literal("null"); return null;
                 default:
                     if (c == '-' || (c >= '0' && c <= '9')) return number();
-                    throw new JsonException("unexpected character '" + c + "'");
+                    // The character is not quoted: it could be the first character of an unquoted token (CONTRACT 6.2, 5).
+                    throw new JsonException("unexpected character");
             }
         }
 

@@ -243,6 +243,16 @@ final class HardeningTests {
             }
         });
 
+        test("json: an unexpected character is not quoted in the error", () -> {
+            String line = "{\"type\":\"hello\",\"role\":\"guest\",\"token\":Zebra-secret}";
+            try {
+                Control.parse(line);
+                throw new AssertionError("accepted " + line);
+            } catch (Wire.WireException e) {
+                eq(e.getMessage(), "bad control line: unexpected character", "message");
+            }
+        });
+
         test("disconnect(null) says bye with an empty reason", () -> {
             try (ReviewTests.Pair p = new ReviewTests.Pair()) {
                 p.guest.disconnect(null);
