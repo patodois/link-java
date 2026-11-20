@@ -42,6 +42,11 @@ import dev.patodois.rewritelink.Wire.WireException;
 public final class Link implements AutoCloseable {
     private static final long CONNECT_TIMEOUT_MS = 1000;
     /**
+     * Host: connections held at most while no session is live, each until its first complete line (CONTRACT.md 2,
+     * revision 8). A new connection that finds this many displaces the oldest.
+     */
+    static final int MAX_CANDIDATES = 4;
+    /**
      * 127.0.0.1 itself, as the contract requires. {@code InetAddress.getLoopbackAddress()} is
      * {@code ::1} when the JVM runs with {@code -Djava.net.preferIPv6Addresses=system} (as the
      * NeoForge and Forge launchers do), and a 127.0.0.1 peer then never connects.
@@ -78,6 +83,8 @@ public final class Link implements AutoCloseable {
     private int endpointPort;
 
     private Conn conn;
+    /** Host: the connections held while no session is live, oldest first (CONTRACT.md 2, revision 8). */
+    private final ArrayDeque<Candidate> candidates = new ArrayDeque<>();
     private final List<Closing> closing = new ArrayList<>();
     private final List<LinkEvent> events = new ArrayList<>();
 
@@ -148,12 +155,31 @@ public final class Link implements AutoCloseable {
         }
     }
 
-    /** Connected, waiting for the peer's hello. */
+    /**
+     * Guest: connected, waiting for the host's hello. (A host holds its connections that have not sent a first line as
+     * {@link Candidate}s instead.)
+     */
     private static final class Handshake implements Conn {
         final Ctl ctl;
         final long since;
 
         Handshake(Ctl ctl, long since) {
+            this.ctl = ctl;
+            this.since = since;
+        }
+    }
+
+    /**
+     * Host: a connection that has not yet delivered a complete first line, while no session is live (CONTRACT.md 2,
+     * revision 8). At most {@link #MAX_CANDIDATES} are held; the first whose first line is an acceptable hello becomes
+     * the session.
+     */
+    private static final class Candidate {
+        final Ctl ctl;
+        /** When its wait for a first line began. */
+        final long since;
+
+        Candidate(Ctl ctl, long since) {
             this.ctl = ctl;
             this.since = since;
         }
@@ -441,6 +467,16 @@ public final class Link implements AutoCloseable {
      * Listens for one guest on 127.0.0.1:{@code cfg.controlPort}. The settings are checked and copied: later changes to
      * {@code cfg} do not affect the link.
      *
+     * <p>Any local process can connect to that port, so a connection proves nothing until its first line has been read
+     * (CONTRACT.md 2, revision 8). While no session is live the host holds up to four connections that have not sent a
+     * complete line yet, and the first whose first line is an acceptable hello becomes the session; the others are then
+     * told {@code busy}. A fifth connection displaces the oldest, which is closed with a bye of its own reason (no event
+     * reports it). Each connection is read as soon as it is accepted, and the ones held are read, oldest first, before
+     * new ones are accepted, so a guest that sends its hello as soon as it is connected is never the one displaced. A
+     * connection that is refused (any other first line) is reported as {@link LinkEvent.HandshakeFailed} and does not
+     * affect the others; one that sends no complete line within {@code timeoutMs} is closed and reported the same way.
+     * While a session is live every other connection is told {@code busy}, as before.
+     *
      * @throws IllegalArgumentException if {@code game} is null, a port is outside 0 to 65535, {@code timeoutMs} or
      *         {@code reconnectMs} outside 0 to 4294967295, or the token unusable (see {@link LinkConfig#token})
      */
@@ -531,7 +567,18 @@ public final class Link implements AutoCloseable {
 
     private void pollConnect(long now) {
         if (listener != null) {
-            List<Ctl> busy = new ArrayList<>();
+            // The candidates already held are read first, oldest first, before anything new is accepted (CONTRACT.md 2,
+            // revision 8).
+            List<Candidate> held = new ArrayList<>(candidates);
+            candidates.clear();
+            for (Candidate c : held) {
+                if (conn instanceof Live) {
+                    retire(c.ctl, "busy", now);
+                } else {
+                    Candidate still = readCandidate(c, now);
+                    if (still != null) candidates.addLast(still);
+                }
+            }
             while (true) {
                 SocketChannel ch;
                 try {
@@ -554,10 +601,18 @@ public final class Link implements AutoCloseable {
                     }
                     continue;
                 }
-                if (conn instanceof Idle) conn = new Handshake(ctl, now);
-                else busy.add(ctl);
+                if (conn instanceof Live) {
+                    retire(ctl, "busy", now); // answered before anything of it is read (sections 2 and 8, bye)
+                    continue;
+                }
+                if (candidates.size() >= MAX_CANDIDATES) {
+                    // Its own reason, not busy: no session is live, and the peer may connect again.
+                    retire(candidates.pollFirst().ctl, "no first line before newer connections arrived", now);
+                }
+                // Read at once, before the next connection is accepted.
+                Candidate still = readCandidate(new Candidate(ctl, now), now);
+                if (still != null) candidates.addLast(still);
             }
-            for (Ctl c : busy) retire(c, "busy", now);
             return;
         }
         if (conn instanceof Idle && now >= ((Idle) conn).nextTry) {
@@ -678,8 +733,12 @@ public final class Link implements AutoCloseable {
         if (conn instanceof Live) ((Live) conn).lastHeard = now;
         if (msg instanceof Control.Bye) return new String[] {peerSaidBye(((Control.Bye) msg).reason())};
         if (conn instanceof Handshake) {
+            // Guest: the host's hello. (A host reads the first line of a candidate in readCandidate.)
             if (!(msg instanceof Control.Hello)) return new String[] {"expected hello as the first line", "bye"};
-            return onHello((Control.Hello) msg, now);
+            Checked checked = checkHello((Control.Hello) msg);
+            if (checked.refusal != null) return new String[] {checked.refusal, "bye"};
+            String err = startSession(((Handshake) conn).ctl, checked.peer, now);
+            return err == null ? null : new String[] {err, "bye"};
         }
         if (msg instanceof Control.Hello) {
             return new String[] {"second hello", "bye"};
@@ -740,28 +799,101 @@ public final class Link implements AutoCloseable {
     }
 
     /**
+     * Host: reads candidate {@code c} and acts on its first line, if a complete one has arrived (CONTRACT.md 2, revision
+     * 8). Returns the candidate if it still is one. A first line that is an acceptable hello makes it the session, and
+     * every other candidate is answered busy; any other first line is refused as section 6 says, and the other
+     * candidates are not affected.
+     */
+    private Candidate readCandidate(Candidate c, long now) {
+        Ctl.Read read = c.ctl.readLines();
+        List<String> lines = read.lines();
+        if (lines.isEmpty()) {
+            if (read.end() == null) return c;
+            refuse(c.ctl, read.end(), read.bye(), now);
+            return null;
+        }
+        linesReceived++;
+        Control msg;
+        try {
+            msg = Control.parse(lines.get(0));
+        } catch (WireException e) {
+            refuse(c.ctl, "protocol error: " + e.getMessage(), true, now);
+            return null;
+        }
+        if (msg instanceof Control.Bye) {
+            refuse(c.ctl, peerSaidBye(((Control.Bye) msg).reason()), false, now);
+            return null;
+        }
+        if (!(msg instanceof Control.Hello)) {
+            refuse(c.ctl, "expected hello as the first line", true, now);
+            return null;
+        }
+        Checked checked = checkHello((Control.Hello) msg);
+        if (checked.refusal != null) {
+            refuse(c.ctl, checked.refusal, true, now);
+            return null;
+        }
+        String err = startSession(c.ctl, checked.peer, now);
+        if (err != null) {
+            refuse(c.ctl, err, true, now);
+            return null;
+        }
+        for (Candidate other : candidates) retire(other.ctl, "busy", now);
+        candidates.clear();
+        // What came after the hello in the same read belongs to the session.
+        for (int i = 1; i < lines.size(); i++) {
+            if (!(conn instanceof Live)) return null;
+            linesReceived++;
+            String[] fail = onLine(lines.get(i), now);
+            if (fail != null) {
+                end(fail[0], fail.length > 1);
+                return null;
+            }
+        }
+        if (read.end() != null && conn instanceof Live) end(read.end(), read.bye());
+        return null;
+    }
+
+    /** Host: closes a candidate whose handshake failed, with a bye when {@code bye} is set, and reports it. */
+    private void refuse(Ctl ctl, String reason, boolean bye, long now) {
+        retire(ctl, bye ? reason : null, now);
+        events.add(new LinkEvent.HandshakeFailed(reason));
+    }
+
+    /** What {@link #checkHello} found: the peer, or why its hello is refused. */
+    private static final class Checked {
+        final PeerInfo peer;
+        final String refusal;
+
+        Checked(PeerInfo peer, String refusal) {
+            this.peer = peer;
+            this.refusal = refusal;
+        }
+    }
+
+    /**
      * The checks of CONTRACT.md 6 on the peer's hello, the token first (6.2). A refusal is a fixed text that quotes
      * nothing from the line (section 8, bye, revision 8): it names the rule, never the value.
      */
-    private String[] onHello(Control.Hello h, long now) {
+    private Checked checkHello(Control.Hello h) {
         // A host with a token checks it first, before any other check, in constant time. The answer is the fixed word
         // and nothing about which check failed; neither token is ever put into it.
         if (role == Role.HOST && tokenBytes != null
                 && (h.token() == null || !Tokens.equal(h.token().getBytes(StandardCharsets.UTF_8), tokenBytes))) {
-            return new String[] {"unauthorized", "bye"};
+            return new Checked(null, "unauthorized");
         }
         Role expected = role.other();
-        if (h.role() != expected) return new String[] {"role is not " + expected.wire, "bye"};
-        if (h.udpPort() == 0) return new String[] {"udp_port outside 1 to 65535", "bye"};
+        if (h.role() != expected) return new Checked(null, "role is not " + expected.wire);
+        if (h.udpPort() == 0) return new Checked(null, "udp_port outside 1 to 65535");
         if (h.heartbeatMs() < Wire.MIN_HEARTBEAT_MS || h.heartbeatMs() > Wire.MAX_HEARTBEAT_MS) {
-            return new String[] {"heartbeat_ms outside " + Wire.MIN_HEARTBEAT_MS + " to " + Wire.MAX_HEARTBEAT_MS, "bye"};
+            return new Checked(null, "heartbeat_ms outside " + Wire.MIN_HEARTBEAT_MS + " to " + Wire.MAX_HEARTBEAT_MS);
         }
         int protocol;
         long session;
         if (role == Role.HOST) {
             int v = Wire.negotiate(Wire.MIN_PROTOCOL_VERSION, Wire.PROTOCOL_VERSION, h.minProtocol(), h.protocol());
             if (v < 0) {
-                return new String[] {"unsupported protocol: the version ranges do not overlap", "bye"};
+                return new Checked(null, "unsupported protocol: the version ranges do not overlap");
             }
             protocol = v;
             int s;
@@ -771,35 +903,41 @@ public final class Link implements AutoCloseable {
             session = Integer.toUnsignedLong(s);
         } else {
             if (h.protocol() < Wire.MIN_PROTOCOL_VERSION || h.protocol() > Wire.PROTOCOL_VERSION) {
-                return new String[] {"unsupported protocol: the host chose a version outside this side's range", "bye"};
+                return new Checked(null, "unsupported protocol: the host chose a version outside this side's range");
             }
             if (h.session() == null || h.session() == 0) {
-                return new String[] {"host hello without a nonzero session", "bye"};
+                return new Checked(null, "host hello without a nonzero session");
             }
             protocol = h.protocol();
             session = h.session();
         }
         long watchdogMs = Math.max(timeoutMs, 4 * h.heartbeatMs());
-        PeerInfo peer = new PeerInfo(forPeople(h.game()), h.role(), protocol, (int) session,
-                new InetSocketAddress(LOOPBACK, h.udpPort()), h.heartbeatMs(), watchdogMs);
-        Ctl ctl = ((Handshake) conn).ctl;
+        return new Checked(new PeerInfo(forPeople(h.game()), h.role(), protocol, (int) session,
+                new InetSocketAddress(LOOPBACK, h.udpPort()), h.heartbeatMs(), watchdogMs), null);
+    }
+
+    /**
+     * Makes {@code ctl} the session's connection: queues a host's reply, reports {@link LinkEvent.Connected} and sends
+     * the first heartbeat. Returns null, or why the session could not start ({@code ctl} is then not taken).
+     */
+    private String startSession(Ctl ctl, PeerInfo peer, long now) {
         if (role == Role.HOST) {
-            if(!ctl.queue(hello(protocol, session, null))) {
-                lastError="local hello control line too long";
-                return new String[]{lastError,"bye"};
+            if (!ctl.queue(hello(peer.protocol(), Integer.toUnsignedLong(peer.session()), null))) {
+                lastError = "local hello control line too long";
+                return lastError;
             }
             linesSent++;
             ctl.flush();
         }
         resetSession();
-        conn = new Live(ctl, peer, watchdogMs, now);
-        lastError=null;
+        conn = new Live(ctl, peer, peer.timeoutMs(), now);
+        lastError = null;
         lastBeat = now;
         events.add(new LinkEvent.Connected(peer));
         try {
             send(new Datagram.Heartbeat());
         } catch (WireException e) {
-            return new String[] {e.getMessage(), "bye"};
+            end(e.getMessage(), true);
         }
         return null;
     }
@@ -944,6 +1082,15 @@ public final class Link implements AutoCloseable {
     }
 
     private void pollTimers(long now) {
+        // Host: a candidate that nothing displaced has the host's own timeout for its first line (CONTRACT.md 2 and 6,
+        // revision 8).
+        for (java.util.Iterator<Candidate> it = candidates.iterator(); it.hasNext(); ) {
+            Candidate c = it.next();
+            if (now - c.since > timeoutMs) {
+                it.remove();
+                refuse(c.ctl, "no hello before the timeout", true, now);
+            }
+        }
         if (conn instanceof Handshake && now - ((Handshake) conn).since > timeoutMs) {
             end("no hello before the timeout", true);
         } else if (conn instanceof Live) {
@@ -1138,14 +1285,18 @@ public final class Link implements AutoCloseable {
      * the empty reason: every close says bye (CONTRACT.md 6.1).
      */
     public synchronized void disconnect(String reason) {
-        if (ctl() != null) {
-            boolean interrupted = Thread.interrupted(); // see the class comment
-            try {
+        boolean interrupted = Thread.interrupted(); // see the class comment
+        try {
+            // A host with no session closes the connections it holds that have not sent their hello yet, with the same bye.
+            long now = now();
+            for (Candidate c : candidates) retire(c.ctl, reason == null ? "" : reason, now);
+            candidates.clear();
+            if (ctl() != null) {
                 end(reason == null ? "" : reason, true);
-            } finally {
-                if (interrupted) Thread.currentThread().interrupt();
+                if (!events.isEmpty()) events.remove(events.size() - 1);
             }
-            if (!events.isEmpty()) events.remove(events.size() - 1);
+        } finally {
+            if (interrupted) Thread.currentThread().interrupt();
         }
     }
 
@@ -1173,6 +1324,8 @@ public final class Link implements AutoCloseable {
             }
         }
         conn = new Idle(now);
+        for (Candidate c : candidates) retire(c.ctl, "closing", now);
+        candidates.clear();
         if (ctl != null) retire(ctl, "closing", now);
         long stop = now + Wire.LINGER_MS + 50;
         while (!closing.isEmpty() && now() < stop) {

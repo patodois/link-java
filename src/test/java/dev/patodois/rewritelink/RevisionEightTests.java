@@ -34,6 +34,7 @@ final class RevisionEightTests {
     static void run() {
         texts();
         poseOrder();
+        candidates();
     }
 
     // ---------------------------------------------------------------------------------------------
@@ -322,6 +323,79 @@ final class RevisionEightTests {
                 deliveredTimes(host, 100);
                 g.datagram(new Wire.Datagram.PoseMsg(java.util.Collections.singletonList(pose(5, 0, 10))));
                 eq(deliveredTimes(host, 300), java.util.Collections.singletonList(10L), "after a respawn");
+            }
+        });
+    }
+
+    // ---------------------------------------------------------------------------------------------
+    // Candidates (section 2)
+
+    static void candidates() {
+        test("revision 8: a silent connection does not keep the guest with the token out", () -> {
+            LinkConfig hc = hostConfig();
+            hc.token = Tokens.generate();
+            try (Link host = Link.host(hc); Raw silent = Raw.to(host)) {
+                List<LinkEvent> events = new ArrayList<>();
+                check(silent.line(host, events, 100) == null, "nothing for the silent connection yet");
+                LinkConfig gc = new LinkConfig("rev8 guest");
+                gc.controlPort = host.controlPort();
+                gc.token = hc.token;
+                try (Link guest = Link.guest(gc)) {
+                    check(until(500, () -> {
+                        events.addAll(host.poll());
+                        guest.poll();
+                        return host.isConnected() && guest.isConnected();
+                    }), "the guest is connected within 500 ms");
+                    eq(silent.line(host, events, 1000), "{\"type\":\"bye\",\"reason\":\"busy\"}", "the silent one is then told busy");
+                    check(silent.closed(host, events, 1000), "and closed");
+                }
+            }
+        });
+
+        test("revision 8: a host holds four candidates; newer connections displace the oldest, not with busy", () -> {
+            try (Link host = Link.host(hostConfig())) {
+                List<LinkEvent> events = new ArrayList<>();
+                List<Raw> raws = new ArrayList<>();
+                try {
+                    for (int i = 0; i < 6; i++) {
+                        raws.add(Raw.to(host));
+                        until(30, () -> {
+                            events.addAll(host.poll());
+                            return false;
+                        });
+                    }
+                    for (int i = 0; i < 2; i++) {
+                        String bye = raws.get(i).line(host, events, 1000);
+                        check(bye != null && bye.startsWith("{\"type\":\"bye\"") && !bye.contains("busy"), "connection " + i + " is displaced: " + bye);
+                    }
+                    for (int i = 2; i < 6; i++) check(raws.get(i).line(host, events, 50) == null, "connection " + i + " is still held");
+                    raws.get(5).send(guestHello(""));
+                    check(raws.get(5).line(host, events, 1000).contains("\"hello\""), "the newest becomes the session");
+                    for (int i = 2; i < 5; i++) eq(raws.get(i).line(host, events, 1000), "{\"type\":\"bye\",\"reason\":\"busy\"}", "connection " + i);
+                    for (LinkEvent e : events) check(!(e instanceof LinkEvent.HandshakeFailed), "no event for a displaced or busy candidate: " + e);
+                } finally {
+                    for (Raw r : raws) r.close();
+                }
+            }
+        });
+
+        test("revision 8: a refused candidate leaves the others, and a candidate has the host's timeout", () -> {
+            LinkConfig hc = hostConfig();
+            hc.timeoutMs = 600;
+            try (Link host = Link.host(hc); Raw a = Raw.to(host); Raw b = Raw.to(host)) {
+                List<LinkEvent> events = new ArrayList<>();
+                check(a.line(host, events, 100) == null, "a is held");
+                b.send("{\"type\":\"spawn\",\"entity\":1,\"provider\":\"P\",\"asset\":\"a\"}\n");
+                String bye = b.line(host, events, 1000);
+                check(bye != null && bye.contains("bye") && !bye.contains("busy"), "b is refused: " + bye);
+                check(await(host, events, LinkEvent.HandshakeFailed.class, 1000) != null, "and reported");
+                events.clear();
+                long t0 = System.nanoTime();
+                bye = a.line(host, events, 2000);
+                long ms = (System.nanoTime() - t0) / 1_000_000L;
+                check(bye != null && bye.contains("no hello before the timeout"), "a times out: " + bye);
+                check(ms >= 300 && ms < 1500, "after the host's timeout of 600 ms, took " + ms);
+                check(await(host, events, LinkEvent.HandshakeFailed.class, 1000) != null, "reported");
             }
         });
     }

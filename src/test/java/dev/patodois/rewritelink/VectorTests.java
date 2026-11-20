@@ -68,13 +68,6 @@ final class VectorTests {
     static final Map<String, String> KNOWN_DISAGREEMENTS = new LinkedHashMap<>();
 
     static {
-        KNOWN_DISAGREEMENTS.put("sess.host.handshake.silent_candidate_does_not_hold_the_handshake", "revision 8 candidates (section 2) are not implemented yet");
-        KNOWN_DISAGREEMENTS.put("sess.host.token.silent_candidate_does_not_hold_a_token_host", "revision 8 candidates (section 2) are not implemented yet");
-        KNOWN_DISAGREEMENTS.put("sess.host.handshake.refused_candidate_leaves_the_others", "revision 8 candidates (section 2) are not implemented yet");
-        KNOWN_DISAGREEMENTS.put("sess.host.handshake.fifth_connection_displaces_the_oldest", "revision 8 candidates (section 2) are not implemented yet");
-        KNOWN_DISAGREEMENTS.put("sess.host.handshake.displaced_candidate_is_the_oldest", "revision 8 candidates (section 2) are not implemented yet");
-        KNOWN_DISAGREEMENTS.put("sess.host.handshake.partial_line_does_not_protect_a_candidate", "revision 8 candidates (section 2) are not implemented yet");
-        KNOWN_DISAGREEMENTS.put("sess.host.flood.guest_gets_in_after_a_flood", "revision 8 candidates (section 2) are not implemented yet");
         KNOWN_DISAGREEMENTS.put("sess.host.watchdog.own_pause_is_not_peer_silence", "revision 8 rule for a side that was not running (section 7) is not implemented yet");
         KNOWN_DISAGREEMENTS.put("sess.guest.watchdog.own_pause_is_not_peer_silence", "revision 8 rule for a side that was not running (section 7) is not implemented yet");
         KNOWN_DISAGREEMENTS.put("sess.host.handshake.own_pause_keeps_the_candidate", "revision 8 rule for a side that was not running (section 7) is not implemented yet");
