@@ -39,6 +39,7 @@ final class RevisionEightTests {
         connectedUdp();
         notRunning();
         files();
+        numbers();
     }
 
     // ---------------------------------------------------------------------------------------------
@@ -720,6 +721,39 @@ final class RevisionEightTests {
                 Endpoint.uidForTests = null;
             }
             eq(Endpoint.read(file).controlPort(), 47801, "read again by its owner");
+        });
+    }
+
+    // ---------------------------------------------------------------------------------------------
+    // Numbers too large for a double (section 8, "Syntax of a line" 9)
+
+    static void numbers() {
+        test("revision 8: a number anywhere in a line is refused exactly when its correctly rounded double is not finite", () -> {
+            java.math.BigInteger half = java.math.BigInteger.ONE.shiftLeft(1024).subtract(java.math.BigInteger.ONE.shiftLeft(970));
+            String h = half.toString(); // 2^1024 - 2^970, 309 digits
+            String m = h.charAt(0) + "." + h.substring(1);
+            String nines = new String(new char[2000]).replace('\0', '9');
+            String zeros = new String(new char[1500]).replace('\0', '0');
+            String[] accepted = {"1.7976931348623157e308", "1.7976931348623158e308", "1.797693134862315807e308", "-1.797693134862315807e308",
+                half.subtract(java.math.BigInteger.ONE).toString(), "-" + half.subtract(java.math.BigInteger.ONE),
+                half.subtract(java.math.BigInteger.ONE) + "." + nines, m.substring(0, m.length() - 1) + "1" + nines + "e308",
+                "0." + h.substring(0, h.length() - 1) + "1" + nines + "e309", "1e-400", "-1e-400", "0e999999999", "1e-999999999"};
+            String[] refused = {h, "-" + h, m + "e308", h + ".0", h + "e0", "1.797693134862315808e308", m + zeros + "1e308",
+                "1e400", "-1e400", "1e999999999", "1" + new String(new char[309]).replace('\0', '0'),
+                "1" + new String(new char[65000]).replace('\0', '0')};
+            for (String n : accepted) {
+                Control c = Control.parse("{\"type\":\"despawn\",\"entity\":1,\"x\":[{\"y\":" + n + "}]}");
+                check(c instanceof Control.Despawn, "accepted: " + (n.length() > 60 ? n.substring(0, 60) + "..." : n));
+            }
+            for (String n : refused) {
+                boolean threw = false;
+                try {
+                    Control.parse("{\"type\":\"despawn\",\"entity\":1,\"x\":[{\"y\":" + n + "}]}");
+                } catch (Wire.WireException e) {
+                    threw = true;
+                }
+                check(threw, "refused: " + (n.length() > 60 ? n.substring(0, 60) + "..." : n));
+            }
         });
     }
 }

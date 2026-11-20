@@ -13,7 +13,8 @@ import java.util.Map;
  * <p>The reader accepts exactly what the Rust side's {@code serde_json} accepts, because a control
  * line that one implementation takes and the other refuses is a way to make them disagree: numbers
  * follow the JSON grammar (no leading zeros, no {@code 1.}, no {@code +1}), {@code -0} is the
- * float negative zero (so it is no integer), a number beyond the range of a double is an error,
+ * float negative zero (so it is no integer), a number whose correctly rounded double is not finite is an error
+ * (CONTRACT 8, "Syntax of a line", 9, revision 8: anywhere in a line, at any depth),
  * a unicode escape takes exactly four hex digits and surrogate escapes must come as a valid pair, a
  * NUL escape (backslash, {@code u}, four zeros) is an error in any string, key or value (CONTRACT 8,
  * revision 5: it is refused wherever it is, also in an unknown field and in a value that a later
@@ -114,7 +115,13 @@ final class Json {
             return i < s.length() && s.charAt(i) >= '0' && s.charAt(i) <= '9';
         }
 
-        /** number = [-] (0 | 1-9 digits) [. digits] [(e|E) [+|-] digits], as in RFC 8259. */
+        /**
+         * number = [-] (0 | 1-9 digits) [. digits] [(e|E) [+|-] digits], as in RFC 8259. A literal whose value, correctly
+         * rounded to a double, is not finite is refused (CONTRACT 8, "Syntax of a line", 9, revision 8): one at or above
+         * 2^1024 - 2^970 in magnitude, the value halfway between the largest double and 2^1024. {@code Double.parseDouble}
+         * and {@code BigInteger.doubleValue} round correctly (round to nearest, ties to even) on Java 8 and later, so
+         * their result being infinite is that answer; a literal that rounds to zero is finite and accepted.
+         */
         Object number() throws JsonException {
             int start = i;
             boolean integer = true;
@@ -144,9 +151,10 @@ final class Json {
                 try {
                     return Long.parseLong(t);
                 } catch (NumberFormatException e) {
-                    // Double.MAX_VALUE has 309 digits and an integer literal has no leading zeros, so one with more digits
-                    // is out of range whatever they are. Checked from the length: building a BigInteger is quadratic in
-                    // the digits, and a line can hold 65535 of them.
+                    // An integer literal has no leading zeros, so one of 310 digits or more is at least 10^309, above
+                    // 2^1024 - 2^970 (309 digits): refused whatever the digits, the answer correct rounding gives. Checked
+                    // from the length: building a BigInteger is quadratic in the digits, and a line can hold 65535 of them.
+                    // Up to 309 digits BigInteger.doubleValue decides, correctly rounded.
                     int digits = t.charAt(0) == '-' ? t.length() - 1 : t.length();
                     if (digits > 309) throw new JsonException("number out of range");
                     java.math.BigInteger big = new java.math.BigInteger(t);
