@@ -84,13 +84,6 @@ final class VectorTests {
         KNOWN_DISAGREEMENTS.put("sess.guest.watchdog.own_pause_is_not_peer_silence", "revision 8 rule for a side that was not running (section 7) is not implemented yet");
         KNOWN_DISAGREEMENTS.put("sess.host.handshake.own_pause_keeps_the_candidate", "revision 8 rule for a side that was not running (section 7) is not implemented yet");
         KNOWN_DISAGREEMENTS.put("sess.guest.handshake.own_pause_keeps_the_wait_for_hello", "revision 8 rule for a side that was not running (section 7) is not implemented yet");
-        KNOWN_DISAGREEMENTS.put("sess.host.handshake.bad_heartbeat_value_not_echoed", "revision 8 fixed error texts and cleaned peer text (section 8) are not implemented yet");
-        KNOWN_DISAGREEMENTS.put("sess.host.handshake.version_values_not_echoed", "revision 8 fixed error texts and cleaned peer text (section 8) are not implemented yet");
-        KNOWN_DISAGREEMENTS.put("sess.guest.handshake.host_version_not_echoed", "revision 8 fixed error texts and cleaned peer text (section 8) are not implemented yet");
-        KNOWN_DISAGREEMENTS.put("sess.host.control.bye_reason_control_characters_replaced", "revision 8 fixed error texts and cleaned peer text (section 8) are not implemented yet");
-        KNOWN_DISAGREEMENTS.put("sess.host.handshake.first_line_bye_control_characters_replaced", "revision 8 fixed error texts and cleaned peer text (section 8) are not implemented yet");
-        KNOWN_DISAGREEMENTS.put("sess.host.handshake.game_control_characters_replaced", "revision 8 fixed error texts and cleaned peer text (section 8) are not implemented yet");
-        KNOWN_DISAGREEMENTS.put("sess.host.control.spawn_name_control_characters_replaced", "revision 8 fixed error texts and cleaned peer text (section 8) are not implemented yet");
         KNOWN_DISAGREEMENTS.put("pw.file_is_owner_only", "revision 8 pixel file mode (section 9.6) is not implemented yet");
     }
 

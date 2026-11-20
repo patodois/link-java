@@ -784,6 +784,7 @@ public final class LinkTests {
         TokenTests.run();
         FuzzFindingTests.run();
         HardeningTests.run();
+        RevisionEightTests.run();
         VectorTests.run();
         deleteTempDirs();
 

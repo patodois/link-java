@@ -434,7 +434,9 @@ public interface Control {
 
     /**
      * Parses one line (with or without its line ending). Unknown types give {@link Unknown}; a
-     * known type with a missing or out-of-range field is a {@link WireException}.
+     * known type with a missing or out-of-range field is a {@link WireException}. The exception's text is fixed: it
+     * may name a field, never quote a value, a key, a character or a position of the line (CONTRACT.md 8, bye,
+     * revision 8). Strings are delivered as sent; {@link Link} cleans the text it hands to the application.
      */
     static Control parse(String line) throws WireException {
         // One pass: dropping the line endings one character at a time copied the line each time, quadratic in the number
@@ -459,7 +461,7 @@ public interface Control {
         switch (type) {
             case "hello": {
                 Role role = Role.parse(ControlFields.str(o, "role"));
-                if (role == null) throw new WireException("bad control line: role");
+                if (role == null) throw new WireException("bad control line: role is not host or guest");
                 return new Hello(role, ControlFields.str(o, "game"),
                         (int) ControlFields.bounded(o, "protocol", 0xFFFF), (int) ControlFields.bounded(o, "min_protocol", 0xFFFF),
                         (int) ControlFields.bounded(o, "udp_port", 0xFFFF),
@@ -473,7 +475,7 @@ public interface Control {
                 return new Despawn(ControlFields.bounded(o, "entity", 0xFFFFFFFFL));
             case "input": {
                 Role focus = Role.parse(ControlFields.str(o, "focus"));
-                if (focus == null) throw new WireException("bad control line: focus");
+                if (focus == null) throw new WireException("bad control line: focus is not host or guest");
                 return new Input(focus, ControlFields.optStr(o, "reason"));
             }
             case "frame_channel":

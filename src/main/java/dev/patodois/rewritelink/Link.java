@@ -663,9 +663,9 @@ public final class Link implements AutoCloseable {
             return new String[] {"protocol error: " + e.getMessage(), "bye"};
         }
         if (conn instanceof Live) ((Live) conn).lastHeard = now;
-        if (msg instanceof Control.Bye) return new String[] {"peer said bye: " + ((Control.Bye) msg).reason()};
+        if (msg instanceof Control.Bye) return new String[] {peerSaidBye(((Control.Bye) msg).reason())};
         if (conn instanceof Handshake) {
-            if (!(msg instanceof Control.Hello)) return new String[] {"expected hello", "bye"};
+            if (!(msg instanceof Control.Hello)) return new String[] {"expected hello as the first line", "bye"};
             return onHello((Control.Hello) msg, now);
         }
         if (msg instanceof Control.Hello) {
@@ -685,7 +685,8 @@ public final class Link implements AutoCloseable {
                 }
                 entities.put(sp.entity(), 0L);
             }
-            events.add(new LinkEvent.Spawn(sp));
+            events.add(new LinkEvent.Spawn(sp.name() == null ? sp
+                    : new Control.Spawn(sp.entity(), sp.provider(), sp.asset(), forPeople(sp.name()))));
         } else if (msg instanceof Control.Despawn) {
             Control.Despawn d = (Control.Despawn) msg;
             if (entities.remove(d.entity()) != null) events.add(new LinkEvent.Despawn(d.entity()));
@@ -702,6 +703,33 @@ public final class Link implements AutoCloseable {
         return null;
     }
 
+    /**
+     * Text from the peer meant for people (the reason of its bye, the game of its hello, a spawn name), as the
+     * application gets it: every char below U+0020 and U+007F replaced by a space, so a peer cannot write a forged log
+     * line or a terminal escape through it (CONTRACT.md 8, bye, revision 8). Those are single UTF-8 bytes, never part
+     * of a longer character. Identifiers ({@code provider}, {@code asset}, {@code path}) are handed on as sent.
+     */
+    static String forPeople(String s) {
+        char[] c = null;
+        for (int i = 0; i < s.length(); i++) {
+            char ch = s.charAt(i);
+            if (ch < 0x20 || ch == 0x7F) {
+                if (c == null) c = s.toCharArray();
+                c[i] = ' ';
+            }
+        }
+        return c == null ? s : new String(c);
+    }
+
+    /** The reason of the Lost or HandshakeFailed event that a bye from the peer gives: its own text, cleaned. */
+    private static String peerSaidBye(String reason) {
+        return "peer said bye: " + forPeople(reason);
+    }
+
+    /**
+     * The checks of CONTRACT.md 6 on the peer's hello, the token first (6.2). A refusal is a fixed text that quotes
+     * nothing from the line (section 8, bye, revision 8): it names the rule, never the value.
+     */
     private String[] onHello(Control.Hello h, long now) {
         // A host with a token checks it first, before any other check, in constant time. The answer is the fixed word
         // and nothing about which check failed; neither token is ever put into it.
@@ -710,19 +738,17 @@ public final class Link implements AutoCloseable {
             return new String[] {"unauthorized", "bye"};
         }
         Role expected = role.other();
-        if (h.role() != expected) return new String[] {"peer claims role " + h.role().wire, "bye"};
-        if (h.udpPort() == 0) return new String[] {"peer announced udp_port 0", "bye"};
+        if (h.role() != expected) return new String[] {"role is not " + expected.wire, "bye"};
+        if (h.udpPort() == 0) return new String[] {"udp_port outside 1 to 65535", "bye"};
         if (h.heartbeatMs() < Wire.MIN_HEARTBEAT_MS || h.heartbeatMs() > Wire.MAX_HEARTBEAT_MS) {
-            return new String[] {"peer announced heartbeat_ms " + h.heartbeatMs() + ", outside " + Wire.MIN_HEARTBEAT_MS
-                    + ".." + Wire.MAX_HEARTBEAT_MS, "bye"};
+            return new String[] {"heartbeat_ms outside " + Wire.MIN_HEARTBEAT_MS + " to " + Wire.MAX_HEARTBEAT_MS, "bye"};
         }
         int protocol;
         long session;
         if (role == Role.HOST) {
             int v = Wire.negotiate(Wire.MIN_PROTOCOL_VERSION, Wire.PROTOCOL_VERSION, h.minProtocol(), h.protocol());
             if (v < 0) {
-                return new String[] {"unsupported protocol: peer " + h.minProtocol() + ".." + h.protocol()
-                        + ", ours " + Wire.MIN_PROTOCOL_VERSION + ".." + Wire.PROTOCOL_VERSION, "bye"};
+                return new String[] {"unsupported protocol: the version ranges do not overlap", "bye"};
             }
             protocol = v;
             int s;
@@ -732,7 +758,7 @@ public final class Link implements AutoCloseable {
             session = Integer.toUnsignedLong(s);
         } else {
             if (h.protocol() < Wire.MIN_PROTOCOL_VERSION || h.protocol() > Wire.PROTOCOL_VERSION) {
-                return new String[] {"host chose unsupported protocol " + h.protocol(), "bye"};
+                return new String[] {"unsupported protocol: the host chose a version outside this side's range", "bye"};
             }
             if (h.session() == null || h.session() == 0) {
                 return new String[] {"host hello without a nonzero session", "bye"};
@@ -741,7 +767,7 @@ public final class Link implements AutoCloseable {
             session = h.session();
         }
         long watchdogMs = Math.max(timeoutMs, 4 * h.heartbeatMs());
-        PeerInfo peer = new PeerInfo(h.game(), h.role(), protocol, (int) session,
+        PeerInfo peer = new PeerInfo(forPeople(h.game()), h.role(), protocol, (int) session,
                 new InetSocketAddress(LOOPBACK, h.udpPort()), h.heartbeatMs(), watchdogMs);
         Ctl ctl = ((Handshake) conn).ctl;
         if (role == Role.HOST) {
