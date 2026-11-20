@@ -122,6 +122,8 @@ public final class Link implements AutoCloseable {
     private int endpointPort;
 
     private Conn conn;
+    /** When the previous {@link #poll()} began, to tell a pause of this side's own from the peer's silence (CONTRACT.md 7, revision 8). */
+    private long lastPoll;
     /** Host: the connections held while no session is live, oldest first (CONTRACT.md 2, revision 8). */
     private final ArrayDeque<Candidate> candidates = new ArrayDeque<>();
     private final List<Closing> closing = new ArrayList<>();
@@ -200,7 +202,8 @@ public final class Link implements AutoCloseable {
      */
     private static final class Handshake implements Conn {
         final Ctl ctl;
-        final long since;
+        /** When its wait for the host's hello began: at the connection, or later if this side was not running. */
+        long since;
 
         Handshake(Ctl ctl, long since) {
             this.ctl = ctl;
@@ -215,8 +218,8 @@ public final class Link implements AutoCloseable {
      */
     private static final class Candidate {
         final Ctl ctl;
-        /** When its wait for a first line began. */
-        final long since;
+        /** When its wait for a first line began: when it was accepted, or later if this side was not running. */
+        long since;
 
         Candidate(Ctl ctl, long since) {
             this.ctl = ctl;
@@ -489,6 +492,7 @@ public final class Link implements AutoCloseable {
         this.listener = l;
         this.udp = u;
         this.conn = new Idle(now);
+        this.lastPoll = now;
     }
 
     /** A non-blocking UDP socket bound to {@code addr}, with the receive buffer the contract asks for. */
@@ -591,6 +595,9 @@ public final class Link implements AutoCloseable {
         boolean interrupted = Thread.interrupted(); // see the class comment
         try {
             long now = now();
+            long sinceLast = now - lastPoll;
+            lastPoll = now;
+            afterAPause(sinceLast, now);
             pumpClosing(now);
             pollConnect(now);
             pollControl(now);
@@ -603,6 +610,21 @@ public final class Link implements AutoCloseable {
         } finally {
             if (interrupted) Thread.currentThread().interrupt();
         }
+    }
+
+    /**
+     * CONTRACT.md 7, revision 8: a side that finds more than a timeout between two of its own polls was not running
+     * (suspended, stopped in a debugger, a machine that slept) and cannot judge the other side's silence by that timeout.
+     * Every wait by which it judges the other side starts again at this poll: the watchdog, a host's wait for a
+     * candidate's first line and a guest's wait for the host's hello. A shorter gap counts as it always did. (A side that
+     * polls less often than its timeout is not conforming: its peer hears no heartbeat for that long.)
+     */
+    private void afterAPause(long sinceLast, long now) {
+        if (sinceLast > timeoutMs) {
+            for (Candidate c : candidates) c.since = now;
+            if (conn instanceof Handshake) ((Handshake) conn).since = now;
+        }
+        if (conn instanceof Live && sinceLast > ((Live) conn).timeoutMs) ((Live) conn).lastHeard = now;
     }
 
     /** Makes progress on the connections being closed and forgets the ones that are done. */

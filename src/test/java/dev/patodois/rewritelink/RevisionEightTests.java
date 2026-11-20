@@ -37,6 +37,7 @@ final class RevisionEightTests {
         candidates();
         bounds();
         connectedUdp();
+        notRunning();
     }
 
     // ---------------------------------------------------------------------------------------------
@@ -554,6 +555,96 @@ final class RevisionEightTests {
                     check(host.isConnected(), "the session goes on until the watchdog decides");
                 } finally {
                     g.close();
+                }
+            }
+        });
+    }
+
+    // ---------------------------------------------------------------------------------------------
+    // A side that was not running (sections 6 and 7)
+
+    /** Polls {@code link} for {@code ms}, collecting its events. */
+    static void pollFor(Link link, List<LinkEvent> events, long ms) throws InterruptedException {
+        until(ms, () -> {
+            events.addAll(link.poll());
+            return false;
+        });
+    }
+
+    static boolean has(List<LinkEvent> events, Class<? extends LinkEvent> type) {
+        for (LinkEvent e : events) if (type.isInstance(e)) return true;
+        return false;
+    }
+
+    static void notRunning() {
+        test("revision 8: after a pause longer than the timeout the watchdog counts the peer's silence from the next poll", () -> {
+            LinkConfig hc = hostConfig();
+            hc.timeoutMs = 1000; // the raw guest's heartbeat_ms is 250: the watchdog is 1000 ms
+            try (Link host = Link.host(hc); RawGuest g = new RawGuest(host)) {
+                check(g.session != 0, "a session");
+                Thread.sleep(1500); // not polled, as if the process had been stopped
+                List<LinkEvent> events = new ArrayList<>();
+                pollFor(host, events, 300);
+                check(!has(events, LinkEvent.Lost.class), "not lost at once after the pause: " + events);
+                pollFor(host, events, 1500);
+                check(has(events, LinkEvent.Lost.class), "lost once the peer stays silent a whole timeout");
+            }
+        });
+
+        test("revision 8: a pause shorter than the timeout counts as before", () -> {
+            LinkConfig hc = hostConfig();
+            hc.timeoutMs = 1000;
+            try (Link host = Link.host(hc); RawGuest g = new RawGuest(host)) {
+                check(g.session != 0, "a session");
+                List<LinkEvent> events = new ArrayList<>();
+                pollFor(host, events, 700);
+                Thread.sleep(600);
+                pollFor(host, events, 50);
+                check(has(events, LinkEvent.Lost.class), "1300 ms of silence at the next poll: lost at once");
+            }
+        });
+
+        test("revision 8: after a pause a host's candidate has the whole timeout again for its first line", () -> {
+            LinkConfig hc = hostConfig();
+            hc.timeoutMs = 500;
+            try (Link host = Link.host(hc); Raw a = Raw.to(host)) {
+                List<LinkEvent> events = new ArrayList<>();
+                pollFor(host, events, 50);
+                Thread.sleep(1000);
+                pollFor(host, events, 100);
+                a.send(guestHello(""));
+                check(await(host, events, LinkEvent.Connected.class, 1000) != null, "the hello after the pause is in time: " + events);
+            }
+        });
+
+        test("revision 8: after a pause a guest has the whole timeout again for the host's hello", () -> {
+            try (ServerSocket server = new ServerSocket(0, 5, LO)) {
+                server.setSoTimeout(1);
+                LinkConfig gc = new LinkConfig("rev8 guest");
+                gc.controlPort = server.getLocalPort();
+                gc.timeoutMs = 500;
+                try (Link guest = Link.guest(gc)) {
+                    List<LinkEvent> events = new ArrayList<>();
+                    Socket[] s = {null};
+                    check(until(3000, () -> {
+                        events.addAll(guest.poll());
+                        try {
+                            s[0] = server.accept();
+                        } catch (SocketTimeoutException none) {
+                            return false;
+                        } catch (IOException e) {
+                            throw new AssertionError(e);
+                        }
+                        return true;
+                    }), "the guest connects");
+                    try (Raw raw = new Raw(s[0])) {
+                        check(raw.line(guest, events, 3000) != null, "the guest's hello");
+                        Thread.sleep(1000);
+                        pollFor(guest, events, 100);
+                        raw.send("{\"type\":\"hello\",\"role\":\"host\",\"game\":\"raw\",\"protocol\":1,\"min_protocol\":1,"
+                                + "\"udp_port\":4000,\"heartbeat_ms\":250,\"timeout_ms\":2000,\"session\":7}\n");
+                        check(await(guest, events, LinkEvent.Connected.class, 1000) != null, "the host's hello after the pause is in time: " + events);
+                    }
                 }
             }
         });

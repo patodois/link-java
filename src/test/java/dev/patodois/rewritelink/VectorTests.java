@@ -68,10 +68,6 @@ final class VectorTests {
     static final Map<String, String> KNOWN_DISAGREEMENTS = new LinkedHashMap<>();
 
     static {
-        KNOWN_DISAGREEMENTS.put("sess.host.watchdog.own_pause_is_not_peer_silence", "revision 8 rule for a side that was not running (section 7) is not implemented yet");
-        KNOWN_DISAGREEMENTS.put("sess.guest.watchdog.own_pause_is_not_peer_silence", "revision 8 rule for a side that was not running (section 7) is not implemented yet");
-        KNOWN_DISAGREEMENTS.put("sess.host.handshake.own_pause_keeps_the_candidate", "revision 8 rule for a side that was not running (section 7) is not implemented yet");
-        KNOWN_DISAGREEMENTS.put("sess.guest.handshake.own_pause_keeps_the_wait_for_hello", "revision 8 rule for a side that was not running (section 7) is not implemented yet");
         KNOWN_DISAGREEMENTS.put("pw.file_is_owner_only", "revision 8 pixel file mode (section 9.6) is not implemented yet");
     }
 
