@@ -542,6 +542,11 @@ public final class LinkTests {
         test("datagrams from another address are dropped", () -> {
             LinkConfig hc = new LinkConfig("Addr Host");
             hc.controlPort = 0;
+            // A fixed UDP port: that socket is never connected (revision 8, see Link.udp), so the address rule is what drops
+            // the stranger's datagram and counts it. (With port 0 the system drops it before it is queued.)
+            try (java.net.DatagramSocket probe = new java.net.DatagramSocket(0, InetAddress.getByName("127.0.0.1"))) {
+                hc.udpPort = probe.getLocalPort();
+            }
             try (Link host = Link.host(hc)) {
                 LinkConfig gc = new LinkConfig("G");
                 gc.controlPort = host.controlPort();

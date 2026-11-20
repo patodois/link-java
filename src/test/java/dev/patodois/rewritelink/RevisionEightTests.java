@@ -36,6 +36,7 @@ final class RevisionEightTests {
         poseOrder();
         candidates();
         bounds();
+        connectedUdp();
     }
 
     // ---------------------------------------------------------------------------------------------
@@ -450,6 +451,109 @@ final class RevisionEightTests {
                     host.poll();
                     long first = host.datagramsReceived - r0;
                     check(first >= 1 && first <= Link.MAX_DATAGRAMS_PER_POLL, "read in one poll of a session: " + first);
+                }
+            }
+        });
+    }
+
+    // ---------------------------------------------------------------------------------------------
+    // The connected UDP socket (section 2)
+
+    static void connectedUdp() {
+        test("revision 8: during a session the UDP socket is connected, so the system drops other senders' datagrams", () -> {
+            try (ReviewTests.Pair p = new ReviewTests.Pair(); java.net.DatagramSocket other = new java.net.DatagramSocket(0, LO)) {
+                long foreign = p.host.foreign;
+                for (int i = 0; i < 20; i++) other.send(new java.net.DatagramPacket(new byte[24], 24, LO, p.host.udpPort()));
+                until(600, () -> { // more than a heartbeat period: the peers' own datagrams arrive meanwhile
+                    p.host.poll();
+                    p.guest.poll();
+                    return false;
+                });
+                eq(p.host.foreign - foreign, 0L, "datagrams from another address that reached the host");
+                check(p.host.isConnected() && p.guest.isConnected(), "the session goes on");
+                check(p.host.datagramsReceived > 0 && p.guest.datagramsReceived > 0, "the peers' own datagrams arrive");
+            }
+        });
+
+        test("revision 8: with port 0 each session has its own UDP socket, and a new session uses the port it announces", () -> {
+            try (Link host = Link.host(hostConfig())) {
+                LinkConfig gc = new LinkConfig("rev8 guest");
+                gc.controlPort = host.controlPort();
+                gc.reconnectMs = 0;
+                try (Link guest = Link.guest(gc)) {
+                    int[] ports = new int[4];
+                    for (int session = 0; session < 2; session++) {
+                        check(until(3000, () -> {
+                            host.poll();
+                            guest.poll();
+                            return host.isConnected() && guest.isConnected();
+                        }), "session " + session + " connects");
+                        ports[2 * session] = host.udpPort();
+                        ports[2 * session + 1] = guest.udpPort();
+                        eq(host.peer().udpAddr().getPort(), guest.udpPort(), "the host uses the port the guest announced");
+                        eq(guest.peer().udpAddr().getPort(), host.udpPort(), "the guest uses the port the host announced");
+                        long got = host.datagramsReceived;
+                        check(until(2000, () -> {
+                            host.poll();
+                            guest.poll();
+                            return host.datagramsReceived > got;
+                        }), "datagrams arrive in session " + session);
+                        if (session == 0) guest.disconnect("next");
+                    }
+                    check(ports[2] != ports[0], "the host's second session has a new socket: " + ports[0] + " then " + ports[2]);
+                    check(ports[3] != ports[1], "the guest's second session has a new socket: " + ports[1] + " then " + ports[3]);
+                }
+            }
+        });
+
+        test("revision 8: with a fixed UDP port the socket stays, and sessions follow each other on it", () -> {
+            int fixed;
+            try (java.net.DatagramSocket probe = new java.net.DatagramSocket(0, LO)) {
+                fixed = probe.getLocalPort();
+            }
+            LinkConfig hc = hostConfig();
+            hc.udpPort = fixed;
+            try (Link host = Link.host(hc)) {
+                LinkConfig gc = new LinkConfig("rev8 guest");
+                gc.controlPort = host.controlPort();
+                gc.reconnectMs = 0;
+                try (Link guest = Link.guest(gc)) {
+                    for (int session = 0; session < 2; session++) {
+                        check(until(3000, () -> {
+                            host.poll();
+                            guest.poll();
+                            return host.isConnected() && guest.isConnected();
+                        }), "session " + session + " connects");
+                        eq(host.udpPort(), fixed, "the fixed port");
+                        long got = host.datagramsReceived;
+                        check(until(2000, () -> {
+                            host.poll();
+                            guest.poll();
+                            return host.datagramsReceived > got;
+                        }), "datagrams arrive in session " + session);
+                        if (session == 0) guest.disconnect("next");
+                    }
+                }
+            }
+        });
+
+        test("revision 8: an unreachable peer port is a lost datagram, not the end of the session", () -> {
+            LinkConfig hc = hostConfig();
+            hc.heartbeatMs = 10;
+            hc.timeoutMs = 3000;
+            try (Link host = Link.host(hc)) {
+                RawGuest g = new RawGuest(host);
+                try {
+                    g.udp.close(); // the peer's port goes away: the host's heartbeats are refused from now on
+                    List<LinkEvent> events = new ArrayList<>();
+                    until(600, () -> {
+                        events.addAll(host.poll());
+                        return false;
+                    });
+                    for (LinkEvent e : events) check(!(e instanceof LinkEvent.Lost), "the session ended: " + e);
+                    check(host.isConnected(), "the session goes on until the watchdog decides");
+                } finally {
+                    g.close();
                 }
             }
         });

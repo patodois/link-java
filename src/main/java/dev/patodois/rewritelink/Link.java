@@ -93,7 +93,21 @@ public final class Link implements AutoCloseable {
     private final long timeoutMs;
     private final long reconnectMs;
     private final ServerSocketChannel listener; // host only
-    private final DatagramChannel udp;
+    /**
+     * This side's UDP socket. During a session it is connected to the peer's address where that is allowed (CONTRACT.md
+     * 2, revision 8), so the system drops every other sender's datagrams before they are queued. It is never
+     * disconnected: on macOS dissolving the association rebinds the socket to every address, and elsewhere it can
+     * release an automatic port. With port 0 configured the socket of a session that was connected is replaced by a new
+     * one, on a new automatic port, when the session ends; the next hello announces it. With a fixed port the socket is
+     * never connected: Java's {@link DatagramChannel} cannot connect a socket again to another address without
+     * disconnecting it first, so the next session could not have it. There the address rule and the per-poll bound
+     * are what keep other senders' datagrams out, as the contract says for a socket that cannot be connected.
+     */
+    private DatagramChannel udp;
+    /** The address {@link #udp} is connected to (the live session's peer, or an old one it could not be freed of), or null. */
+    private InetSocketAddress udpConnectedTo;
+    /** The configured UDP port: 0 lets the socket be replaced, with its connection, for each session. */
+    private final int configuredUdpPort;
     private final SecureRandom random = new SecureRandom();
     /**
      * Host: the token a guest must send, as UTF-8 bytes (null = accept any guest). Guest: the configured token, which
@@ -439,6 +453,7 @@ public final class Link implements AutoCloseable {
         requireRange("reconnectMs", cfg.reconnectMs, 0, 0xFFFFFFFFL);
         this.game = cfg.game;
         this.configuredPort = cfg.controlPort;
+        this.configuredUdpPort = cfg.udpPort;
         this.timeoutMs = cfg.timeoutMs;
         this.reconnectMs = cfg.reconnectMs;
         this.heartbeatMs = Math.max(Wire.MIN_HEARTBEAT_MS, Math.min(Wire.MAX_HEARTBEAT_MS, cfg.heartbeatMs));
@@ -453,15 +468,7 @@ public final class Link implements AutoCloseable {
         ServerSocketChannel l = null;
         DatagramChannel u = null;
         try {
-            u = DatagramChannel.open();
-            try {
-                // Collision snapshots arrive in bursts (CONTRACT.md 2); the OS may grant less, or refuse.
-                u.setOption(StandardSocketOptions.SO_RCVBUF, Wire.RECV_BUFFER_BYTES);
-            } catch (IOException | RuntimeException ignored) {
-                // best effort
-            }
-            u.bind(udpAddr);
-            u.configureBlocking(false);
+            u = openUdp(udpAddr);
             if (role == Role.HOST) {
                 l = ServerSocketChannel.open();
                 l.bind(controlAddr);
@@ -482,6 +489,25 @@ public final class Link implements AutoCloseable {
         this.listener = l;
         this.udp = u;
         this.conn = new Idle(now);
+    }
+
+    /** A non-blocking UDP socket bound to {@code addr}, with the receive buffer the contract asks for. */
+    private static DatagramChannel openUdp(InetSocketAddress addr) throws IOException {
+        DatagramChannel u = DatagramChannel.open();
+        try {
+            try {
+                // Collision snapshots arrive in bursts (CONTRACT.md 2); the OS may grant less, or refuse.
+                u.setOption(StandardSocketOptions.SO_RCVBUF, Wire.RECV_BUFFER_BYTES);
+            } catch (IOException | RuntimeException ignored) {
+                // best effort
+            }
+            u.bind(addr);
+            u.configureBlocking(false);
+            return u;
+        } catch (IOException | RuntimeException e) {
+            u.close();
+            throw e;
+        }
     }
 
     private static void requireRange(String name, long value, long min, long max) {
@@ -962,9 +988,11 @@ public final class Link implements AutoCloseable {
                 return lastError;
             }
             linesSent++;
-            ctl.flush();
         }
         resetSession();
+        // Before the reply goes out, so that none of the peer's first datagrams can arrive before the connect.
+        connectUdp(peer.udpAddr());
+        if (role == Role.HOST) ctl.flush();
         conn = new Live(ctl, peer, peer.timeoutMs(), now);
         lastError = null;
         lastBeat = now;
@@ -997,7 +1025,46 @@ public final class Link implements AutoCloseable {
         conn = new Idle(role == Role.GUEST ? now + reconnectMs : now);
         if (ctl != null) retire(ctl, bye ? reason : null, now);
         resetSession();
+        if (wasLive) renewUdp();
         events.add(wasLive ? new LinkEvent.Lost(reason) : new LinkEvent.HandshakeFailed(reason));
+    }
+
+    /**
+     * Connects the UDP socket to the session's peer (CONTRACT.md 2, revision 8, a SHOULD), where the socket may be
+     * replaced afterwards (port 0 configured; see {@link #udp}). Best effort: a socket that cannot be connected stays as
+     * it was, and the address rule and the per-poll bound still hold.
+     */
+    private void connectUdp(InetSocketAddress peer) {
+        if (configuredUdpPort != 0) return;
+        if (udpConnectedTo != null) renewUdp(); // the previous session's socket could not be replaced then
+        if (udpConnectedTo != null) return;
+        try {
+            udp.connect(peer);
+            udpConnectedTo = peer;
+        } catch (IOException | RuntimeException e) {
+            // not connected: the address rule decides
+        }
+    }
+
+    /**
+     * After a session on a connected socket, a new socket on a new automatic port, so that the old one never has to be
+     * disconnected (CONTRACT.md 2, revision 8). If no new socket can be had, the old one is kept, and the next session
+     * tries again.
+     */
+    private void renewUdp() {
+        if (udpConnectedTo == null) return;
+        boolean interrupted = Thread.interrupted(); // see the class comment
+        try {
+            DatagramChannel fresh = openUdp(new InetSocketAddress(LOOPBACK, 0));
+            DatagramChannel old = udp;
+            udp = fresh;
+            udpConnectedTo = null;
+            old.close();
+        } catch (IOException | RuntimeException e) {
+            // keep the old socket
+        } finally {
+            if (interrupted) Thread.currentThread().interrupt();
+        }
     }
 
     private void pollUdp(long now) {
@@ -1012,7 +1079,10 @@ public final class Link implements AutoCloseable {
                 lastError = "the UDP channel is closed";
                 break;
             } catch (IOException e) {
-                continue; // e.g. ICMP port-unreachable from an earlier send
+                // An unreachable peer port (PortUnreachableException: ECONNREFUSED, or WSAECONNRESET on Windows, which a
+                // connected socket in particular reports for an earlier send) is a lost datagram, not the end of the
+                // session; the watchdog decides (CONTRACT.md 2, revision 8). Any other error costs one of the budget.
+                continue;
             }
             if (from == null) break;
             if (!(conn instanceof Live)) {
@@ -1159,13 +1229,15 @@ public final class Link implements AutoCloseable {
         seq++;
         boolean interrupted = Thread.interrupted(); // see the class comment
         try {
-            if (udp.send(ByteBuffer.wrap(bytes), live.peer.udpAddr()) > 0) datagramsSent++;
+            // A connected socket is connected to this very address; write() needs no destination check.
+            int n = live.peer.udpAddr().equals(udpConnectedTo) ? udp.write(ByteBuffer.wrap(bytes)) : udp.send(ByteBuffer.wrap(bytes), live.peer.udpAddr());
+            if (n > 0) datagramsSent++;
             else sendDropped++;
         } catch (ClosedChannelException e) {
             sendDropped++;
             lastError = "the UDP channel is closed";
         } catch (IOException e) {
-            sendDropped++; // refused or would block: the next tick replaces it
+            sendDropped++; // refused (an unreachable port is a lost datagram) or would block: the next tick replaces it
         } finally {
             if (interrupted) Thread.currentThread().interrupt();
         }
