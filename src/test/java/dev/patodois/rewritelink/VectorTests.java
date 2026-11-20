@@ -62,10 +62,37 @@ final class VectorTests {
      * rewrite-bridge (it copies the directory and prints {@code VECTORS_DIGEST = ...}) and paste the printed digest
      * here.
      */
-    static final String VECTORS_DIGEST = "07cf745d30318403b1808b974f050914db061d78a4351683e0c20fc0284ceab8";
+    static final String VECTORS_DIGEST = "89fc38b3aaf18e095cc14e12bc8f008d3d54d0087bca48b202b81ebe5871f24f";
 
     /** Vectors this implementation fails, id to reason (put them here). Empty when it passes them all. */
     static final Map<String, String> KNOWN_DISAGREEMENTS = new LinkedHashMap<>();
+
+    static {
+        KNOWN_DISAGREEMENTS.put("sess.host.handshake.silent_candidate_does_not_hold_the_handshake", "revision 8 candidates (section 2) are not implemented yet");
+        KNOWN_DISAGREEMENTS.put("sess.host.token.silent_candidate_does_not_hold_a_token_host", "revision 8 candidates (section 2) are not implemented yet");
+        KNOWN_DISAGREEMENTS.put("sess.host.handshake.refused_candidate_leaves_the_others", "revision 8 candidates (section 2) are not implemented yet");
+        KNOWN_DISAGREEMENTS.put("sess.host.handshake.fifth_connection_displaces_the_oldest", "revision 8 candidates (section 2) are not implemented yet");
+        KNOWN_DISAGREEMENTS.put("sess.host.handshake.displaced_candidate_is_the_oldest", "revision 8 candidates (section 2) are not implemented yet");
+        KNOWN_DISAGREEMENTS.put("sess.host.handshake.partial_line_does_not_protect_a_candidate", "revision 8 candidates (section 2) are not implemented yet");
+        KNOWN_DISAGREEMENTS.put("sess.host.flood.guest_gets_in_after_a_flood", "revision 8 candidates (section 2) are not implemented yet");
+        KNOWN_DISAGREEMENTS.put("sess.host.udp.pose_teleport_older_time_is_used", "revision 8 pose order (sections 5, 7, 9.4) is not implemented yet");
+        KNOWN_DISAGREEMENTS.put("sess.host.udp.pose_after_respawn_any_time_is_used", "revision 8 pose order (sections 5, 7, 9.4) is not implemented yet");
+        KNOWN_DISAGREEMENTS.put("sess.host.udp.pose_far_future_then_teleport_recovers", "revision 8 pose order (sections 5, 7, 9.4) is not implemented yet");
+        KNOWN_DISAGREEMENTS.put("sess.guest.udp.pose_teleport_older_time_is_used", "revision 8 pose order (sections 5, 7, 9.4) is not implemented yet");
+        KNOWN_DISAGREEMENTS.put("sess.host.sends.pose_time_never_goes_back", "revision 8 pose order (sections 5, 7, 9.4) is not implemented yet");
+        KNOWN_DISAGREEMENTS.put("sess.host.watchdog.own_pause_is_not_peer_silence", "revision 8 rule for a side that was not running (section 7) is not implemented yet");
+        KNOWN_DISAGREEMENTS.put("sess.guest.watchdog.own_pause_is_not_peer_silence", "revision 8 rule for a side that was not running (section 7) is not implemented yet");
+        KNOWN_DISAGREEMENTS.put("sess.host.handshake.own_pause_keeps_the_candidate", "revision 8 rule for a side that was not running (section 7) is not implemented yet");
+        KNOWN_DISAGREEMENTS.put("sess.guest.handshake.own_pause_keeps_the_wait_for_hello", "revision 8 rule for a side that was not running (section 7) is not implemented yet");
+        KNOWN_DISAGREEMENTS.put("sess.host.handshake.bad_heartbeat_value_not_echoed", "revision 8 fixed error texts and cleaned peer text (section 8) are not implemented yet");
+        KNOWN_DISAGREEMENTS.put("sess.host.handshake.version_values_not_echoed", "revision 8 fixed error texts and cleaned peer text (section 8) are not implemented yet");
+        KNOWN_DISAGREEMENTS.put("sess.guest.handshake.host_version_not_echoed", "revision 8 fixed error texts and cleaned peer text (section 8) are not implemented yet");
+        KNOWN_DISAGREEMENTS.put("sess.host.control.bye_reason_control_characters_replaced", "revision 8 fixed error texts and cleaned peer text (section 8) are not implemented yet");
+        KNOWN_DISAGREEMENTS.put("sess.host.handshake.first_line_bye_control_characters_replaced", "revision 8 fixed error texts and cleaned peer text (section 8) are not implemented yet");
+        KNOWN_DISAGREEMENTS.put("sess.host.handshake.game_control_characters_replaced", "revision 8 fixed error texts and cleaned peer text (section 8) are not implemented yet");
+        KNOWN_DISAGREEMENTS.put("sess.host.control.spawn_name_control_characters_replaced", "revision 8 fixed error texts and cleaned peer text (section 8) are not implemented yet");
+        KNOWN_DISAGREEMENTS.put("pw.file_is_owner_only", "revision 8 pixel file mode (section 9.6) is not implemented yet");
+    }
 
     private static final long STEP_WAIT_MS = 3000;
     private static final InetAddress LO = loopback();
@@ -132,6 +159,36 @@ final class VectorTests {
 
     private static boolean skipLarge() {
         return "1".equals(System.getenv("RBL_VECTORS_SKIP_LARGE"));
+    }
+
+    /** The platform names this runner answers to in a case's {@code only_on} and {@code skip_on} (revision 8). */
+    static List<String> platformNames() {
+        String os = System.getProperty("os.name", "").toLowerCase(java.util.Locale.ROOT);
+        if (os.startsWith("windows")) return Collections.singletonList("windows");
+        if (os.startsWith("linux")) return Arrays.asList("unix", "linux");
+        if (os.startsWith("mac")) return Arrays.asList("unix", "macos");
+        return Collections.singletonList("unix");
+    }
+
+    /**
+     * Why case {@code c} does not run here, or null if it does (revision 8): its {@code only_on} names none of this
+     * platform's names, or its {@code skip_on} names one. Every file's cases may have either.
+     */
+    static String notHere(Map<String, Object> c) {
+        List<String> names = platformNames();
+        Object only = c.get("only_on");
+        if (only != null && Collections.disjoint(arr(only), names)) return c.get("id") + " (only on " + only + ")";
+        Object skip = c.get("skip_on");
+        if (skip != null && !Collections.disjoint(arr(skip), names)) return c.get("id") + " (not on " + names.get(0) + ")";
+        return null;
+    }
+
+    /** Records {@code c} as skipped and returns true if it does not run on this platform. */
+    static boolean skippedHere(Report r, Map<String, Object> c) {
+        String why = notHere(c);
+        if (why == null) return false;
+        r.skipped.add(why);
+        return true;
     }
 
     @SuppressWarnings("unchecked")
@@ -464,7 +521,9 @@ final class VectorTests {
 
     static void controlVectors() throws Exception {
         Report r = new Report();
-        for (Map<String, Object> c : load("control.json")) r.record(c, () -> checkControl(c));
+        for (Map<String, Object> c : load("control.json")) {
+            if (!skippedHere(r, c)) r.record(c, () -> checkControl(c));
+        }
         r.finish("control.json");
     }
 
@@ -586,7 +645,9 @@ final class VectorTests {
 
     static void datagramVectors() throws Exception {
         Report r = new Report();
-        for (Map<String, Object> c : load("datagrams.json")) r.record(c, () -> checkDatagram(c));
+        for (Map<String, Object> c : load("datagrams.json")) {
+            if (!skippedHere(r, c)) r.record(c, () -> checkDatagram(c));
+        }
         r.finish("datagrams.json");
     }
 
@@ -687,7 +748,8 @@ final class VectorTests {
         PixelFile.Reader reader = null;
         try {
             Path path = tmp.resolve("pixel.frames");
-            Path openPath;
+            Path openPath = null;
+            String openText = null; // revision 8, Windows path kinds: the exact text the receiver is given
             Object kind = c.get("path_kind");
             if (kind == null) {
                 if (c.get("recipe") != null) makeRecipe(obj(c.get("recipe")), path);
@@ -740,18 +802,41 @@ final class VectorTests {
                         openPath = tmp.resolve("fifo.frames");
                         if (windows() || !makeFifo(openPath)) throw new SkipCase("cannot create a FIFO here");
                         break;
+                    case "literal":
+                        // Revision 8 (section 9.6, item 5): exactly the text of the case's path, which names nothing of
+                        // the runner's.
+                        openText = str(c.get("path"));
+                        break;
+                    case "verbatim_drive": {
+                        // A valid copy, named by its absolute drive-letter path in the verbatim form \\?\X:\...
+                        copyFixture(c, path);
+                        String abs = path.toAbsolutePath().toString();
+                        openText = abs.startsWith("\\\\?\\") ? abs : "\\\\?\\" + abs;
+                        break;
+                    }
+                    case "forward_slashes":
+                        // A valid copy, named by its absolute path with every \ written as /.
+                        copyFixture(c, path);
+                        openText = path.toAbsolutePath().toString().replace('\\', '/');
+                        break;
                     default:
                         throw new IllegalArgumentException("path_kind " + kind);
                 }
             }
             PixelFile.Reader opened = null;
             IOException refused = null;
+            long began = System.nanoTime();
             try {
-                opened = PixelFile.Reader.open(openPath);
+                opened = openText != null ? openText(openText) : PixelFile.Reader.open(openPath);
             } catch (IOException e) {
                 refused = e;
             }
+            long tookMs = (System.nanoTime() - began) / 1_000_000L;
             reader = opened;
+            // Revision 8: the call that opens the file returns, with the file or a refusal, within max_ms.
+            if (c.get("max_ms") != null && tookMs > num(c.get("max_ms"))) {
+                throw new Mismatch("opening took " + tookMs + " ms, more than " + c.get("max_ms") + " ms");
+            }
             switch (str(c.get("open"))) {
                 case "refused":
                     if (opened != null) throw new Mismatch("opened the file (" + c.get("why") + ")");
@@ -816,6 +901,15 @@ final class VectorTests {
         }
     }
 
+    /** Opens the pixel file a peer names by the text {@code path}, as the receiver of a frame_channel would. */
+    static PixelFile.Reader openText(String path) throws IOException {
+        try {
+            return PixelFile.Reader.open(Paths.get(path));
+        } catch (java.nio.file.InvalidPathException e) {
+            throw new IOException("not a path: " + e.getMessage());
+        }
+    }
+
     /** A case this platform cannot run. */
     static final class SkipCase extends Exception {
         private static final long serialVersionUID = 1L;
@@ -843,11 +937,7 @@ final class VectorTests {
                 r.skipped.add(c.get("id") + " (large)");
                 continue;
             }
-            if (windows() && c.get("skip_on") != null && arr(c.get("skip_on")).contains("windows")) {
-                r.skipped.add(c.get("id") + " (windows)");
-                continue;
-            }
-            r.record(c, () -> checkPixelReader(c));
+            if (!skippedHere(r, c)) r.record(c, () -> checkPixelReader(c));
         }
         r.finish("pixelfiles.json (readers)");
     }
@@ -886,6 +976,17 @@ final class VectorTests {
                 writer = new PixelFile.Writer(path, width, height, slots, withDepth);
             } catch (IOException | IllegalArgumentException e) {
                 throw new Mismatch("create failed: " + e);
+            }
+            // Revision 8 (section 9.6, Unix): the permission bits as created, before any write. The runner keeps its umask.
+            if (c.get("file_mode") != null) {
+                if (!java.nio.file.FileSystems.getDefault().supportedFileAttributeViews().contains("posix")) {
+                    throw new SkipCase("no POSIX permissions here");
+                }
+                int got = 0;
+                for (java.nio.file.attribute.PosixFilePermission p : Files.getPosixFilePermissions(path)) got |= 0400 >> p.ordinal();
+                if (got != Integer.parseInt(str(c.get("file_mode")), 8)) {
+                    throw new Mismatch("the file was created with mode 0" + Integer.toOctalString(got) + ", expected " + c.get("file_mode"));
+                }
             }
             int i = 0;
             long done = 0;
@@ -933,7 +1034,7 @@ final class VectorTests {
     static void pixelWriterVectors() throws Exception {
         Report r = new Report();
         for (Map<String, Object> c : load("pixelfiles.json")) {
-            if (c.get("writer") != null) r.record(c, () -> checkPixelWriter(c));
+            if (c.get("writer") != null && !skippedHere(r, c)) r.record(c, () -> checkPixelWriter(c));
         }
         r.finish("pixelfiles.json (writers)");
     }
@@ -1029,8 +1130,9 @@ final class VectorTests {
             return new Ev("connected", map("role", p.role().wire, "game", p.game(), "protocol", (long) p.protocol(),
                     "session", Integer.toUnsignedLong(p.session()), "heartbeat_ms", p.heartbeatMs()));
         }
-        if (e instanceof LinkEvent.Lost) return new Ev("lost", map());
-        if (e instanceof LinkEvent.HandshakeFailed) return new Ev("handshake_failed", map());
+        // The reason is not specified, so no vector matches it; excludes looks at it (revision 8).
+        if (e instanceof LinkEvent.Lost) return new Ev("lost", map("reason", ((LinkEvent.Lost) e).reason()));
+        if (e instanceof LinkEvent.HandshakeFailed) return new Ev("handshake_failed", map("reason", ((LinkEvent.HandshakeFailed) e).reason()));
         if (e instanceof LinkEvent.Camera) {
             LinkEvent.Camera c = (LinkEvent.Camera) e;
             return new Ev("camera", map("seq", Integer.toUnsignedLong(c.header().seq()),
@@ -1113,6 +1215,27 @@ final class VectorTests {
         }
     }
 
+    /** Every string in {@code v}, at any depth. */
+    static void stringsOf(Object v, List<String> out) {
+        if (v instanceof String) out.add((String) v);
+        else if (v instanceof List) for (Object x : (List<?>) v) stringsOf(x, out);
+        else if (v instanceof Map) for (Object x : ((Map<?, ?>) v).values()) stringsOf(x, out);
+    }
+
+    /** Revision 8: none of the step's {@code excludes} strings occurs in {@code text}. */
+    static void excludesOk(Map<String, Object> step, String what, String text) throws Mismatch {
+        Object ex = step.get("excludes");
+        if (ex == null) return;
+        for (Object x : arr(ex)) {
+            if (text.contains(str(x))) throw new Mismatch(what + " contains " + Json.quote(str(x)) + ": " + Json.quote(text));
+        }
+    }
+
+    /** How long a step may wait: its {@code max_ms} (revision 8), or the default of three seconds. */
+    static long stepWait(Map<String, Object> step) {
+        return step.get("max_ms") == null ? STEP_WAIT_MS : num(step.get("max_ms"));
+    }
+
     static String le32(long v) {
         long x = v & 0xFFFFFFFFL;
         return hex(new byte[] {(byte) x, (byte) (x >> 8), (byte) (x >> 16), (byte) (x >> 24)});
@@ -1126,7 +1249,6 @@ final class VectorTests {
         final DatagramSocket udp;
         DatagramSocket other;
         final Map<String, String> vars = new HashMap<>();
-        final int utUdp;
         final Map<String, Map<String, Object>> datagrams;
 
         Session(Map<String, Object> c, Map<String, Map<String, Object>> datagrams) throws Exception {
@@ -1150,9 +1272,15 @@ final class VectorTests {
                 lc.controlPort = listener.getLocalPort();
                 ut = Link.guest(lc);
             }
-            utUdp = ut.udpPort();
+            // The UT's port at creation, which its first session announces; a later capture replaces it, since a
+            // side's UDP port may differ from one session to the next (contract section 2, revision 8).
             vars.put("peer_udp_port", String.valueOf(udp.getLocalPort()));
-            vars.put("ut_udp_port", String.valueOf(utUdp));
+            vars.put("ut_udp_port", String.valueOf(ut.udpPort()));
+        }
+
+        /** The UT's UDP port: the one its latest captured hello announced, or its port at creation. */
+        int utUdp() {
+            return Integer.parseInt(vars.get("ut_udp_port"));
         }
 
         void close() {
@@ -1247,6 +1375,26 @@ final class VectorTests {
                     conns.put(connName(step), new Raw(s));
                     break;
                 }
+                case "connect_many": {
+                    // Revision 8: count connections named prefix + 0, 1, ..., opened one after the other without polling
+                    // the UT; nothing is sent on them and nothing is read until a step names one.
+                    String prefix = str(step.get("prefix"));
+                    for (long i = 0, n = num(step.get("count")); i < n; i++) {
+                        Socket s = new Socket();
+                        try {
+                            s.connect(new java.net.InetSocketAddress(LO, ut.controlPort()), (int) STEP_WAIT_MS);
+                        } catch (IOException e) {
+                            s.close();
+                            throw new Mismatch("connection " + prefix + i + " did not complete: " + e);
+                        }
+                        conns.put(prefix + i, new Raw(s));
+                    }
+                    break;
+                }
+                case "pause":
+                    // Revision 8: the UT is not polled for ms milliseconds, as if its process had been stopped.
+                    Thread.sleep(num(step.get("ms")));
+                    break;
                 case "accept": {
                     Socket s = await(STEP_WAIT_MS, () -> {
                         try {
@@ -1342,7 +1490,7 @@ final class VectorTests {
                         if (other == null) other = new DatagramSocket(0, LO);
                         from = other;
                     }
-                    from.send(new DatagramPacket(b, b.length, LO, utUdp));
+                    from.send(new DatagramPacket(b, b.length, LO, utUdp()));
                     break;
                 }
                 case "expect_datagram":
@@ -1374,7 +1522,7 @@ final class VectorTests {
                 case "expect_event": {
                     String ty = str(step.get("event"));
                     int count = step.get("count") == null ? 1 : (int) num(step.get("count"));
-                    Boolean ok = await(STEP_WAIT_MS, () -> {
+                    Boolean ok = await(stepWait(step), () -> {
                         int have = 0;
                         for (Ev e : events) if (e.type.equals(ty)) have++;
                         return have >= count ? Boolean.TRUE : null;
@@ -1395,6 +1543,9 @@ final class VectorTests {
                                     throw new Mismatch(ty + " event " + taken + ": " + m.getMessage());
                                 }
                             }
+                            List<String> texts = new ArrayList<>();
+                            stringsOf(e.data, texts);
+                            for (String t : texts) excludesOk(step, ty + " event " + taken, t);
                             taken++;
                         } else {
                             i++;
@@ -1415,12 +1566,13 @@ final class VectorTests {
 
         void expectLine(Map<String, Object> step) throws Exception {
             Raw raw = conn(step);
-            byte[] line = await(STEP_WAIT_MS, () -> {
+            byte[] line = await(stepWait(step), () -> {
                 raw.fill();
                 return raw.takeLine();
             });
             if (line == null) throw new Mismatch("no line from the implementation");
             String text = new String(line, StandardCharsets.UTF_8);
+            excludesOk(step, "the line", text); // revision 8: the raw text, before any JSON decoding
             String trimmed = text.replaceAll("[ \t\r\n]+$", "");
             Object parsed;
             try {
@@ -1446,11 +1598,7 @@ final class VectorTests {
                 for (Map.Entry<String, Object> e : obj(cap).entrySet()) {
                     Object val = v.get(str(e.getValue()));
                     if (!(val instanceof Long)) throw new Mismatch("captured value is not an integer");
-                    String s = val.toString();
-                    if (e.getKey().equals("ut_udp_port") && !s.equals(String.valueOf(utUdp))) {
-                        throw new Mismatch("hello announces udp_port " + s + ", the socket is " + utUdp);
-                    }
-                    vars.put(e.getKey(), s);
+                    vars.put(e.getKey(), val.toString());
                 }
             }
         }
@@ -1472,6 +1620,7 @@ final class VectorTests {
             final byte[] wantLike = like;
             List<Long> seqs = new ArrayList<>();
             byte[] buf = new byte[16384];
+            int utUdp = utUdp();
             String r = await(timeout, () -> {
                 while (true) {
                     DatagramPacket p = new DatagramPacket(buf, buf.length);
@@ -1612,9 +1761,8 @@ final class VectorTests {
     static void endpointVectors() throws Exception {
         Report r = new Report();
         for (Map<String, Object> c : load("endpoints.json")) {
+            if (skippedHere(r, c)) continue;
             r.record(c, () -> {
-                Object skip = c.get("skip_on");
-                if (skip != null && windows() && arr(skip).contains("windows")) throw new SkipCase("not on Windows");
                 Path tmp = Files.createTempDirectory("rbl-endpoint-vector");
                 try {
                     checkEndpoint(c, tmp);
@@ -1635,6 +1783,7 @@ final class VectorTests {
         for (Map<String, Object> c : load("datagrams.json")) all.put(str(c.get("id")), c);
         Report r = new Report();
         for (Map<String, Object> c : load("sessions.json")) {
+            if (skippedHere(r, c)) continue;
             r.record(c, () -> {
                 Session s = new Session(c, all);
                 try {
