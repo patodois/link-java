@@ -655,6 +655,37 @@ final class RevisionEightTests {
     // Windows paths, the pixel file's mode, the endpoint file's owner (sections 6.2 and 9.6)
 
     static void files() {
+        test("revision 8: on Windows a receiver opens only drive-letter paths that name no device", () -> {
+            String[] ok = {"C:\\Users\\me\\AppData\\Local\\Temp\\pixel.frames", "c:/temp/pixel.frames", "C:\\a\\b/c.frames",
+                "\\\\?\\C:\\Temp\\pixel.frames", "D:\\NULL.frames", "D:\\CONSOLE", "D:\\COM0.frames", "D:\\LPT10", "D:\\x\\nul.d\\f",
+                "D:\\aux1.frames", "D:\\.frames"};
+            String[] refused = {"\\\\192.0.2.1\\rbl-vectors\\pixel.frames", "\\\\?\\UNC\\192.0.2.1\\share\\pixel.frames",
+                "\\\\.\\pipe\\rbl-vectors-pixel", "\\\\?\\GLOBALROOT\\Device\\Null", "\\\\.\\C:\\x.frames", "//server/share/x.frames",
+                "C:\\rbl-vectors\\NUL.frames", "C:\\x\\nul", "C:\\x\\Con.txt", "C:\\x\\COM1", "C:\\x\\lpt9.frames", "C:\\x\\NUL .frames",
+                "C:\\x\\aux", "C:\\x\\prn.", "C:pixel.frames", "C:", "C:\\", "C:\\x\\", "pixel.frames", "\\x\\pixel.frames", "",
+                "1:\\x.frames", "\\\\?\\C:/x.frames", "\\\\?\\C:\\a\\..\\b.frames", "\\\\?\\C:\\a\\.\\b.frames", "\\\\?\\c:", "\\??\\C:\\x.frames"};
+            for (String p : ok) check(PixelFile.windowsPathIsDriveLetter(p), "accepted: " + p);
+            for (String p : refused) check(!PixelFile.windowsPathIsDriveLetter(p), "refused: " + p);
+        });
+
+        test("revision 8: PixelFile.Reader.open(String) opens what open(Path) opens", () -> {
+            java.nio.file.Path dir = LinkTests.tempDir("rev8-open");
+            java.nio.file.Path file = dir.resolve("w.frames");
+            try (PixelFile.Writer w = new PixelFile.Writer(file, 4, 2, 2, false)) {
+                eq(w.width, 4, "the writer's width");
+                try (PixelFile.Reader r = PixelFile.Reader.open(file.toAbsolutePath().toString())) {
+                    eq(r.width, 4, "width");
+                }
+                boolean refused = false;
+                try {
+                    PixelFile.Reader.open("relative.frames").close();
+                } catch (IOException e) {
+                    refused = true;
+                }
+                check(refused, "a relative path is refused");
+            }
+        });
+
         test("revision 8: a new pixel file is owner-only (0600) from its creation on a POSIX file system", () -> {
             java.nio.file.Path dir = LinkTests.tempDir("rev8-mode");
             if (!dir.getFileSystem().supportedFileAttributeViews().contains("posix")) return; // Windows: the directory's ACL

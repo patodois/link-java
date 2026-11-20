@@ -235,6 +235,27 @@ public final class PixelFile {
         }
 
         /**
+         * Opens the file a peer's {@code frame_channel} names by the text of its {@code path}, as {@link #open(Path)}
+         * does. On Windows the text is checked before anything else (CONTRACT.md 9.6, item 5, revision 8; see
+         * {@link #open(Path)}), and a drive-letter path in its verbatim form {@code \\?\X:\...}, which Java's
+         * {@link Path} cannot represent, is opened as the same path without the prefix. Use this rather than
+         * {@code Paths.get(path)}, which throws an unchecked {@link java.nio.file.InvalidPathException} for such a text.
+         *
+         * @throws IOException if the path is refused (a {@link FormatException}) or the file cannot be opened or is
+         *         refused
+         */
+        public static Reader open(String path) throws IOException {
+            if (WINDOWS) checkWindowsReceiverPath(path, false); // the drive is examined by open(Path)
+            Path p;
+            try {
+                p = java.nio.file.Paths.get(WINDOWS && path.startsWith(VERBATIM) ? path.substring(VERBATIM.length()) : path);
+            } catch (java.nio.file.InvalidPathException e) {
+                throw new FormatException("the pixel file path is not a valid path");
+            }
+            return open(p);
+        }
+
+        /**
          * Opens and checks the file as section 9.6 says: the path must be absolute and name a regular
          * file (a symlink, FIFO, device or directory is refused), {@code width} and {@code height}
          * are 1 to 16384 with {@code width * height} at most 67108864, {@code stride} is {@code width * 4},
@@ -252,6 +273,18 @@ public final class PixelFile {
          * renames another regular file over the path just before the open and puts the first one back
          * before the second check is not detected. Where the file system has no file key (it is null)
          * only the type is compared.
+         *
+         * <p>On Windows (revision 8, item 5), before any file-system call, the path must be a drive-letter path
+         * ({@code X:\...} or {@code X:/...}) whose last component is not a name Windows reserves for a device
+         * ({@code CON}, {@code PRN}, {@code AUX}, {@code NUL}, {@code COM1} to {@code COM9}, {@code LPT1} to {@code LPT9},
+         * with or without an extension): UNC paths, device paths and every other form are refused, since merely looking
+         * them up makes Windows go to the network, offering the user's credentials, or open a pipe or a device. The drive
+         * must then be local where Java can tell: a removable or CD-ROM drive is refused ({@code FileStore} attributes
+         * {@code volume:isRemovable} and {@code volume:isCdrom}, asked of the drive's root only). Java's standard library
+         * cannot tell a mapped network drive from a fixed one (it has no {@code GetDriveType} result for that), nor give
+         * the final path of an opened handle, so a mapped network drive, and a directory link to a share, are not
+         * refused. On Unix the contract lets a receiver refuse a file system that is not local; this one does not
+         * (Java has no {@code statfs}).
          */
         public static Reader open(Path path) throws IOException {
             return open(path, null);
@@ -259,6 +292,7 @@ public final class PixelFile {
 
         /** {@link #open(Path)} with a hook run between the type check and the open, for the tests. */
         static Reader open(Path path, Runnable beforeOpen) throws IOException {
+            if (WINDOWS) checkWindowsReceiverPath(path.toString(), true);
             if (!path.isAbsolute()) throw new FormatException("the pixel file path is not absolute: " + path);
             BasicFileAttributes attrs = Files.readAttributes(path, BasicFileAttributes.class, LinkOption.NOFOLLOW_LINKS);
             if (!attrs.isRegularFile()) throw new FormatException("not a regular file: " + path);
@@ -534,6 +568,72 @@ public final class PixelFile {
         }
     }
 
+    // ------------------------------------------------------------------ Windows paths (revision 8)
+
+    private static final String VERBATIM = "\\\\?\\";
+
+    /**
+     * CONTRACT.md 9.6, item 5 (revision 8), the part that needs no system call: is {@code path} a drive-letter path,
+     * {@code X:\...} or {@code X:/...} or the same as {@code \\?\X:\...}, whose last component is not a name Windows
+     * reserves for a device? Everything else (UNC paths {@code \\server\share} and {@code \\?\UNC\...}, device paths
+     * {@code \\.\...} and {@code \\?\GLOBALROOT\...}, every other {@code \\?\} form) is refused. In the verbatim form
+     * {@code /} is not a separator and {@code .} and {@code ..} are not resolved, so a component that is one of them
+     * names nothing a file on a drive can have, and is refused too. Plain string work, tested on every platform; only
+     * Windows calls it.
+     */
+    static boolean windowsPathIsDriveLetter(String path) {
+        boolean verbatim = path.startsWith(VERBATIM);
+        String rest = verbatim ? path.substring(VERBATIM.length()) : path;
+        if (rest.length() < 4) return false;
+        char letter = rest.charAt(0);
+        boolean separator = rest.charAt(2) == '\\' || (!verbatim && rest.charAt(2) == '/');
+        if (!((letter >= 'A' && letter <= 'Z') || (letter >= 'a' && letter <= 'z')) || rest.charAt(1) != ':' || !separator) return false;
+        if (verbatim) {
+            if (rest.indexOf('/') >= 0) return false;
+            for (String component : rest.split("\\\\", -1)) {
+                if (component.equals(".") || component.equals("..")) return false;
+            }
+        }
+        String last = rest.substring(Math.max(rest.lastIndexOf('\\'), rest.lastIndexOf('/')) + 1);
+        if (last.isEmpty()) return false;
+        // A reserved name is one with or without an extension; Windows also ignores trailing spaces before it.
+        int dot = last.indexOf('.');
+        String stem = dot < 0 ? last : last.substring(0, dot);
+        int end = stem.length();
+        while (end > 0 && stem.charAt(end - 1) == ' ') end--;
+        stem = stem.substring(0, end).toUpperCase(java.util.Locale.ROOT);
+        if (stem.equals("CON") || stem.equals("PRN") || stem.equals("AUX") || stem.equals("NUL")) return false;
+        return !(stem.length() == 4 && (stem.startsWith("COM") || stem.startsWith("LPT")) && stem.charAt(3) >= '1' && stem.charAt(3) <= '9');
+    }
+
+    /**
+     * A receiver's check of a peer's pixel-file path on Windows, before anything touches the path: a drive-letter path
+     * ({@link #windowsPathIsDriveLetter}), and, if {@code drive}, a drive that is local where Java can tell (see
+     * {@link Reader#open(Path)}).
+     */
+    static void checkWindowsReceiverPath(String path, boolean drive) throws FormatException {
+        if (!windowsPathIsDriveLetter(path)) {
+            throw new FormatException("the pixel file path is not a drive-letter path to a file, or names a device");
+        }
+        if (drive && !windowsDriveMayBeLocal(path.startsWith(VERBATIM) ? path.charAt(VERBATIM.length()) : path.charAt(0))) {
+            throw new FormatException("the pixel file is not on a local drive");
+        }
+    }
+
+    /**
+     * False for a removable or CD-ROM drive, the kinds of drive that are not local which Java's {@code FileStore} reports
+     * on Windows; true otherwise, also when the drive cannot be examined (a refusal is then left to opening the file).
+     * Java cannot tell a mapped network drive.
+     */
+    private static boolean windowsDriveMayBeLocal(char letter) {
+        try {
+            java.nio.file.FileStore store = Files.getFileStore(java.nio.file.Paths.get(letter + ":\\"));
+            return !Boolean.TRUE.equals(store.getAttribute("volume:isRemovable")) && !Boolean.TRUE.equals(store.getAttribute("volume:isCdrom"));
+        } catch (IOException | RuntimeException cannotTell) {
+            return true;
+        }
+    }
+
     // ------------------------------------------------------------------ writer
 
     /**
@@ -588,6 +688,15 @@ public final class PixelFile {
             }
             if (total > Integer.MAX_VALUE) {
                 throw new IllegalArgumentException("a pixel file of " + total + " bytes is over the 2 GiB a Java mapping holds");
+            }
+            if (WINDOWS) {
+                // A sender creates its file on a local drive, under a path a receiver accepts; one whose temporary directory
+                // is elsewhere has no pixel channel (CONTRACT.md 9.6, revision 8).
+                try {
+                    checkWindowsReceiverPath(path.toAbsolutePath().toString(), true);
+                } catch (FormatException e) {
+                    throw new IOException("the pixel file would not be on a local drive under a drive-letter path");
+                }
             }
             // Owner-only (0600) from the moment it exists on a POSIX file system, never a chmod afterwards (CONTRACT.md
             // 9.6, revision 8): the file holds what the game shows. On Windows the per-user temporary directory's ACL does it.

@@ -876,11 +876,7 @@ final class VectorTests {
 
     /** Opens the pixel file a peer names by the text {@code path}, as the receiver of a frame_channel would. */
     static PixelFile.Reader openText(String path) throws IOException {
-        try {
-            return PixelFile.Reader.open(Paths.get(path));
-        } catch (java.nio.file.InvalidPathException e) {
-            throw new IOException("not a path: " + e.getMessage());
-        }
+        return PixelFile.Reader.open(path);
     }
 
     /** A case this platform cannot run. */
