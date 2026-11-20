@@ -34,12 +34,14 @@ peer still opens and keeps a session. What this library now does:
 - **Bounds per poll.** A host accepts at most 8 connections per poll and holds at most 16 sockets while they close
   (beyond that the oldest is closed without its drain). A poll reads at most 1024 datagrams during a session and 64
   without one.
-- **The UDP socket.** With UDP port 0 (the default) the socket is connected to the peer during a session, so the
-  system drops other senders' datagrams, and each session gets a new socket on a new port: `Link.udpPort()` may change
-  between sessions, and the `hello` announces the current one. A connected socket is never disconnected. With a fixed
-  UDP port the socket is not connected (a Java `DatagramChannel` cannot be connected again to another address without
-  a disconnect), so there the address rule and the bound keep other senders out. An unreachable peer port is a lost
-  datagram, never the end of the session.
+- **The UDP socket.** During a session the socket is connected to the peer, so the system drops other senders'
+  datagrams before they are queued. A connected socket is never disconnected, and a Java `DatagramChannel` cannot be
+  connected a second time without a disconnect, so the socket is replaced when a session ends: with UDP port 0 (the
+  default) by a new socket on a new port, so `Link.udpPort()` may change between sessions and each `hello` announces
+  the current one; with a fixed UDP port by closing the socket and binding a new one on the same port. If another
+  process takes the fixed port in that instant, the next session runs on an automatic port, `Link.lastError()` says so
+  during that session, and the fixed port is tried again when it ends. An unreachable peer port is a lost datagram,
+  never the end of the session.
 - **Pose order.** `sendPoses` never sends an entity a `time_us` lower than the last one it sent it: such a pose goes
   out with the last time plus 1 microsecond, counted in `Link.poseTimeRaised`. A pose with `Wire.POSE_TELEPORT`, and
   the first pose after `spawn` of the entity, may carry any time and restart its order; a receiver uses a teleport

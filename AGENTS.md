@@ -51,8 +51,8 @@ python3 -m venv .workflow-tests
 - Bind and connect only to `127.0.0.1`; `Link.poll()` must not wait for the network or the peer.
 - Revision 8 bounds are reference values the shared vectors assume (`Link.MAX_CANDIDATES`, `MAX_ACCEPTS_PER_POLL`,
   `MAX_CLOSING`, `MAX_DATAGRAMS_PER_POLL`, `MAX_DATAGRAMS_WITHOUT_SESSION`); keep them unless the contract changes.
-- Never disconnect a connected `DatagramChannel`; with UDP port 0 a session gets a new socket instead
-  (`Link.udpPort()` may change between sessions).
+- Never disconnect a connected `DatagramChannel`; after each session the socket is replaced instead: a new automatic
+  port with UDP port 0 (`Link.udpPort()` may change between sessions), the same port rebound with a fixed one.
 - Texts sent or reported for a refused line are fixed and quote nothing from it; peer text for people goes through
   `Link.forPeople`.
 - Follow rewrite-bridge's contract; vectors come from it and are pinned by digest.

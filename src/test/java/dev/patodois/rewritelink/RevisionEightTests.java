@@ -462,6 +462,38 @@ final class RevisionEightTests {
     // ---------------------------------------------------------------------------------------------
     // The connected UDP socket (section 2)
 
+    static int freeUdpPort() throws IOException {
+        try (java.net.DatagramSocket probe = new java.net.DatagramSocket(0, LO)) {
+            return probe.getLocalPort();
+        }
+    }
+
+    static void connectBoth(Link host, Link guest, int session) throws InterruptedException {
+        check(until(3000, () -> {
+            host.poll();
+            guest.poll();
+            return host.isConnected() && guest.isConnected();
+        }), "session " + session + " connects");
+    }
+
+    /** A stranger's datagrams to the host's UDP port are dropped by the system; the peers' own datagrams still arrive. */
+    static void strangerNeverArrives(Link host, Link guest, java.net.DatagramSocket stranger, int session) throws Exception {
+        long foreign = host.foreign, got = host.datagramsReceived;
+        byte[] b = Wire.encode(new Wire.Header(1, 0, host.peer().session(), 1, Wire.nowUs()), new Wire.Datagram.Heartbeat());
+        for (int i = 0; i < 20; i++) stranger.send(new java.net.DatagramPacket(b, b.length, LO, host.udpPort()));
+        check(until(2000, () -> {
+            host.poll();
+            guest.poll();
+            return host.datagramsReceived > got;
+        }), "the guest's datagrams arrive in session " + session);
+        until(100, () -> {
+            host.poll();
+            guest.poll();
+            return false;
+        });
+        eq(host.foreign - foreign, 0L, "stranger's datagrams that reached the host in session " + session);
+    }
+
     static void connectedUdp() {
         test("revision 8: during a session the UDP socket is connected, so the system drops other senders' datagrams", () -> {
             try (ReviewTests.Pair p = new ReviewTests.Pair(); java.net.DatagramSocket other = new java.net.DatagramSocket(0, LO)) {
@@ -509,34 +541,64 @@ final class RevisionEightTests {
             }
         });
 
-        test("revision 8: with a fixed UDP port the socket stays, and sessions follow each other on it", () -> {
-            int fixed;
-            try (java.net.DatagramSocket probe = new java.net.DatagramSocket(0, LO)) {
-                fixed = probe.getLocalPort();
-            }
+        test("revision 8: a fixed UDP port holds over three sessions, and a stranger's datagram never reaches the host", () -> {
             LinkConfig hc = hostConfig();
-            hc.udpPort = fixed;
-            try (Link host = Link.host(hc)) {
+            hc.udpPort = freeUdpPort();
+            try (Link host = Link.host(hc); java.net.DatagramSocket stranger = new java.net.DatagramSocket(0, LO)) {
                 LinkConfig gc = new LinkConfig("rev8 guest");
                 gc.controlPort = host.controlPort();
                 gc.reconnectMs = 0;
                 try (Link guest = Link.guest(gc)) {
-                    for (int session = 0; session < 2; session++) {
-                        check(until(3000, () -> {
-                            host.poll();
-                            guest.poll();
-                            return host.isConnected() && guest.isConnected();
-                        }), "session " + session + " connects");
-                        eq(host.udpPort(), fixed, "the fixed port");
-                        long got = host.datagramsReceived;
-                        check(until(2000, () -> {
-                            host.poll();
-                            guest.poll();
-                            return host.datagramsReceived > got;
-                        }), "datagrams arrive in session " + session);
-                        if (session == 0) guest.disconnect("next");
+                    for (int session = 0; session < 3; session++) {
+                        connectBoth(host, guest, session);
+                        eq(host.udpPort(), hc.udpPort, "the fixed port in session " + session);
+                        eq(guest.peer().udpAddr().getPort(), hc.udpPort, "the port the host announced in session " + session);
+                        check(host.lastError() == null, "no error: " + host.lastError());
+                        strangerNeverArrives(host, guest, stranger, session);
+                        guest.disconnect("next");
                     }
                 }
+            }
+        });
+
+        test("revision 8: a fixed UDP port taken between two sessions gives one session an automatic port, and says so", () -> {
+            LinkConfig hc = hostConfig();
+            hc.udpPort = freeUdpPort();
+            java.net.DatagramSocket[] squatter = {null};
+            try (Link host = Link.host(hc); java.net.DatagramSocket stranger = new java.net.DatagramSocket(0, LO)) {
+                LinkConfig gc = new LinkConfig("rev8 guest");
+                gc.controlPort = host.controlPort();
+                gc.reconnectMs = 0;
+                try (Link guest = Link.guest(gc)) {
+                    connectBoth(host, guest, 0);
+                    // Another process takes the port in the instant between closing the socket and binding it again.
+                    Link.beforeRebindForTests = () -> {
+                        try {
+                            squatter[0] = new java.net.DatagramSocket(hc.udpPort, LO);
+                        } catch (java.net.SocketException e) {
+                            throw new AssertionError(e);
+                        }
+                    };
+                    try {
+                        guest.disconnect("next");
+                        connectBoth(host, guest, 1);
+                    } finally {
+                        Link.beforeRebindForTests = null;
+                    }
+                    check(squatter[0] != null, "the port was taken");
+                    check(host.udpPort() != hc.udpPort, "an automatic port for this session");
+                    eq(guest.peer().udpAddr().getPort(), host.udpPort(), "the host announced the port it uses");
+                    check(host.lastError() != null && host.lastError().contains("could not be bound again"), "lastError says so: " + host.lastError());
+                    strangerNeverArrives(host, guest, stranger, 1);
+                    squatter[0].close();
+                    guest.disconnect("next");
+                    connectBoth(host, guest, 2);
+                    eq(host.udpPort(), hc.udpPort, "the fixed port again once it is free");
+                    check(host.lastError() == null, "and no error: " + host.lastError());
+                    strangerNeverArrives(host, guest, stranger, 2);
+                }
+            } finally {
+                if (squatter[0] != null) squatter[0].close();
             }
         });
 

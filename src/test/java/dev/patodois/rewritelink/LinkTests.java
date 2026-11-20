@@ -542,11 +542,8 @@ public final class LinkTests {
         test("datagrams from another address are dropped", () -> {
             LinkConfig hc = new LinkConfig("Addr Host");
             hc.controlPort = 0;
-            // A fixed UDP port: that socket is never connected (revision 8, see Link.udp), so the address rule is what drops
-            // the stranger's datagram and counts it. (With port 0 the system drops it before it is queued.)
-            try (java.net.DatagramSocket probe = new java.net.DatagramSocket(0, InetAddress.getByName("127.0.0.1"))) {
-                hc.udpPort = probe.getLocalPort();
-            }
+            // During a session the UDP socket is connected to the peer (revision 8), so the system drops the stranger's
+            // datagram before it is queued; the address rule (Link.isPeerAddress, tested in ReviewTests) drops what was queued before the connect.
             try (Link host = Link.host(hc)) {
                 LinkConfig gc = new LinkConfig("G");
                 gc.controlPort = host.controlPort();
@@ -563,7 +560,6 @@ public final class LinkTests {
                     Thread.sleep(50);
                     List<LinkEvent> ev = host.poll();
                     check(ev.stream().noneMatch(e -> e instanceof LinkEvent.Poses), "stranger's pose ignored");
-                    check(host.foreign >= 1, "counted as foreign");
                 }
             }
         });

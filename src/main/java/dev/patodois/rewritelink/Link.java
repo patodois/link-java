@@ -95,20 +95,25 @@ public final class Link implements AutoCloseable {
     private final long reconnectMs;
     private final ServerSocketChannel listener; // host only
     /**
-     * This side's UDP socket. During a session it is connected to the peer's address where that is allowed (CONTRACT.md
-     * 2, revision 8), so the system drops every other sender's datagrams before they are queued. It is never
-     * disconnected: on macOS dissolving the association rebinds the socket to every address, and elsewhere it can
-     * release an automatic port. With port 0 configured the socket of a session that was connected is replaced by a new
-     * one, on a new automatic port, when the session ends; the next hello announces it. With a fixed port the socket is
-     * never connected: Java's {@link DatagramChannel} cannot connect a socket again to another address without
-     * disconnecting it first, so the next session could not have it. There the address rule and the per-poll bound
-     * are what keep other senders' datagrams out, as the contract says for a socket that cannot be connected.
+     * This side's UDP socket. During a session it is connected to the peer's address (CONTRACT.md 2, revision 8), so the
+     * system drops every other sender's datagrams before they are queued. It is never disconnected: on macOS dissolving
+     * the association rebinds the socket to every address, and elsewhere it can release an automatic port. Java's
+     * {@link DatagramChannel} cannot connect a socket a second time without disconnecting it first, so the socket of a
+     * session that was connected is replaced when the session ends, as section 2 says for such a platform: with port 0
+     * configured by a new socket on a new automatic port, with a fixed port by closing the socket and binding a new one
+     * on the same port. The next hello announces the new socket's port. If the fixed port cannot be bound again
+     * (another process took it in that instant), the link takes an automatic port for the next session, says so in
+     * {@link #lastError()} while it uses it, and tries the fixed port again when that session ends.
      */
     private DatagramChannel udp;
     /** The address {@link #udp} is connected to (the live session's peer, or an old one it could not be freed of), or null. */
     private InetSocketAddress udpConnectedTo;
-    /** The configured UDP port: 0 lets the socket be replaced, with its connection, for each session. */
+    /** The configured UDP port: 0 for an automatic one. */
     private final int configuredUdpPort;
+    /** Why {@link #udp} is not on the configured fixed port, or null when it is (or the port is automatic). */
+    private String udpFallback;
+    /** For the tests: run between closing the fixed-port socket and binding it again. */
+    static volatile Runnable beforeRebindForTests;
     private final SecureRandom random = new SecureRandom();
     /**
      * Host: the token a guest must send, as UTF-8 bytes (null = accept any guest). Guest: the configured token, which
@@ -444,7 +449,9 @@ public final class Link implements AutoCloseable {
 
     /**
      * Latest local error, or null after a successful TCP connection: a refused or missing endpoint file (the reason, never
-     * its contents), a closed UDP channel or listener, a control line of our own that is too long. Never a token.
+     * its contents), a closed UDP channel or listener, a control line of our own that is too long, a fixed UDP port that
+     * could not be bound again after a session (then kept for the session that runs on an automatic port in its place;
+     * see {@link #udpPort()}). Never a token.
      */
     public synchronized String lastError() { return lastError; }
 
@@ -568,8 +575,10 @@ public final class Link implements AutoCloseable {
     }
 
     /**
-     * The port of this side's UDP socket now, the one its next (or current) hello announces. With UDP port 0 configured
-     * each session gets a new socket, so it may change between sessions (CONTRACT.md 2, revision 8).
+     * The port of this side's UDP socket now, the one its next (or current) hello announces. Each session that connected
+     * the socket gets a new one when it ends (CONTRACT.md 2, revision 8): with UDP port 0 configured on a new automatic
+     * port, so it may change between sessions; with a fixed port on the same port, unless another process took it in
+     * that instant, when one session runs on an automatic port and {@link #lastError()} says so.
      */
     public synchronized int udpPort() {
         try {
@@ -1021,7 +1030,7 @@ public final class Link implements AutoCloseable {
         connectUdp(peer.udpAddr());
         if (role == Role.HOST) ctl.flush();
         conn = new Live(ctl, peer, peer.timeoutMs(), now);
-        lastError = null;
+        lastError = udpFallback; // null, unless this session runs on an automatic port in place of the fixed one
         lastBeat = now;
         events.add(new LinkEvent.Connected(peer));
         try {
@@ -1062,7 +1071,6 @@ public final class Link implements AutoCloseable {
      * it was, and the address rule and the per-poll bound still hold.
      */
     private void connectUdp(InetSocketAddress peer) {
-        if (configuredUdpPort != 0) return;
         if (udpConnectedTo != null) renewUdp(); // the previous session's socket could not be replaced then
         if (udpConnectedTo != null) return;
         try {
@@ -1074,21 +1082,45 @@ public final class Link implements AutoCloseable {
     }
 
     /**
-     * After a session on a connected socket, a new socket on a new automatic port, so that the old one never has to be
-     * disconnected (CONTRACT.md 2, revision 8). If no new socket can be had, the old one is kept, and the next session
-     * tries again.
+     * After a session on a connected socket, a new socket, so that the old one never has to be disconnected (CONTRACT.md
+     * 2, revision 8; see {@link #udp}). With port 0 configured the new socket is bound first, on a new automatic port,
+     * and if none can be had the old one is kept and the next session tries again. With a fixed port the old socket is
+     * closed first and a new one bound on the same port; if that fails, an automatic port, and {@link #udpFallback} says
+     * why.
      */
     private void renewUdp() {
         if (udpConnectedTo == null) return;
         boolean interrupted = Thread.interrupted(); // see the class comment
         try {
-            DatagramChannel fresh = openUdp(new InetSocketAddress(LOOPBACK, 0));
+            if (configuredUdpPort == 0) {
+                DatagramChannel fresh = openUdp(new InetSocketAddress(LOOPBACK, 0));
+                DatagramChannel old = udp;
+                udp = fresh;
+                udpConnectedTo = null;
+                old.close();
+                return;
+            }
             DatagramChannel old = udp;
-            udp = fresh;
             udpConnectedTo = null;
-            old.close();
+            try {
+                old.close();
+            } catch (IOException ignored) {
+                // closed all the same
+            }
+            Runnable hook = beforeRebindForTests;
+            if (hook != null) hook.run();
+            try {
+                udp = openUdp(new InetSocketAddress(LOOPBACK, configuredUdpPort));
+                udpFallback = null;
+            } catch (IOException | RuntimeException taken) {
+                udp = openUdp(new InetSocketAddress(LOOPBACK, 0));
+                udpFallback = "the fixed UDP port " + configuredUdpPort + " could not be bound again; an automatic port is used until"
+                        + " the next session ends";
+                lastError = udpFallback;
+            }
         } catch (IOException | RuntimeException e) {
-            // keep the old socket
+            // Port 0: the old socket is kept. A fixed port: no socket could be bound at all, so the link has no UDP channel.
+            if (configuredUdpPort != 0) lastError = "no UDP socket could be bound again after the session; " + e.getClass().getSimpleName();
         } finally {
             if (interrupted) Thread.currentThread().interrupt();
         }
