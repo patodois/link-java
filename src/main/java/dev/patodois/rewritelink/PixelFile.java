@@ -16,7 +16,7 @@ import java.util.Objects;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
- * The shared-memory pixel file of CONTRACT.md section 9.6 (revision 7, with the optional depth
+ * The shared-memory pixel file of CONTRACT.md section 9.6 (revision 8, with the optional depth
  * plane): a {@link Reader} for the receiving side (bounded Unix I/O or a read-only Windows map) and a {@link Writer}
  * for the sending side. Both use the seqlock of the contract: the writer makes the slot's
  * {@code lock} odd while it writes and even afterwards, the reader copies and checks that the lock did
@@ -589,7 +589,15 @@ public final class PixelFile {
             if (total > Integer.MAX_VALUE) {
                 throw new IllegalArgumentException("a pixel file of " + total + " bytes is over the 2 GiB a Java mapping holds");
             }
-            this.channel = FileChannel.open(path, StandardOpenOption.CREATE_NEW, StandardOpenOption.READ, StandardOpenOption.WRITE);
+            // Owner-only (0600) from the moment it exists on a POSIX file system, never a chmod afterwards (CONTRACT.md
+            // 9.6, revision 8): the file holds what the game shows. On Windows the per-user temporary directory's ACL does it.
+            java.nio.file.attribute.FileAttribute<?>[] ownerOnly = path.getFileSystem().supportedFileAttributeViews().contains("posix")
+                    ? new java.nio.file.attribute.FileAttribute<?>[] {java.nio.file.attribute.PosixFilePermissions.asFileAttribute(
+                            java.util.EnumSet.of(java.nio.file.attribute.PosixFilePermission.OWNER_READ,
+                                    java.nio.file.attribute.PosixFilePermission.OWNER_WRITE))}
+                    : new java.nio.file.attribute.FileAttribute<?>[0];
+            this.channel = FileChannel.open(path, java.util.EnumSet.of(StandardOpenOption.CREATE_NEW, StandardOpenOption.READ,
+                    StandardOpenOption.WRITE), ownerOnly);
             java.nio.MappedByteBuffer m;
             try {
                 m = channel.map(FileChannel.MapMode.READ_WRITE, 0, total);

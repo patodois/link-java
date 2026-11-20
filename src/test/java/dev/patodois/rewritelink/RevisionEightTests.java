@@ -38,6 +38,7 @@ final class RevisionEightTests {
         bounds();
         connectedUdp();
         notRunning();
+        files();
     }
 
     // ---------------------------------------------------------------------------------------------
@@ -647,6 +648,47 @@ final class RevisionEightTests {
                     }
                 }
             }
+        });
+    }
+
+    // ---------------------------------------------------------------------------------------------
+    // Windows paths, the pixel file's mode, the endpoint file's owner (sections 6.2 and 9.6)
+
+    static void files() {
+        test("revision 8: a new pixel file is owner-only (0600) from its creation on a POSIX file system", () -> {
+            java.nio.file.Path dir = LinkTests.tempDir("rev8-mode");
+            if (!dir.getFileSystem().supportedFileAttributeViews().contains("posix")) return; // Windows: the directory's ACL
+            java.nio.file.Path file = dir.resolve("w.frames");
+            try (PixelFile.Writer w = new PixelFile.Writer(file, 4, 2, 2, true)) {
+                eq(w.path(), file, "the writer's file");
+                eq(java.nio.file.attribute.PosixFilePermissions.toString(java.nio.file.Files.getPosixFilePermissions(file)), "rw-------", "mode");
+            }
+        });
+
+        test("revision 8: the endpoint file must belong to this process's user, where Java can tell", () -> {
+            java.nio.file.Path dir = LinkTests.tempDir("rev8-owner");
+            java.nio.file.Path file = dir.resolve("endpoint.json");
+            String token = Tokens.generate();
+            Endpoint.write(file, 47801, token);
+            eq(Endpoint.read(file).controlPort(), 47801, "read by its owner");
+            Long me = Endpoint.processUid();
+            boolean posix = dir.getFileSystem().supportedFileAttributeViews().contains("posix");
+            if (!posix) {
+                check(me == null || !VectorTests.windows(), "no owner check without POSIX permissions");
+                return;
+            }
+            check(me != null, "a Unix JVM tells its user id");
+            Endpoint.uidForTests = me + 1; // as if another user ran this process
+            try {
+                Endpoint.read(file);
+                throw new AssertionError("a file of another user was accepted");
+            } catch (IOException refused) {
+                eq(refused.getMessage(), "the endpoint file belongs to another user", "the refusal");
+                check(!refused.getMessage().contains(token), "no token in the refusal");
+            } finally {
+                Endpoint.uidForTests = null;
+            }
+            eq(Endpoint.read(file).controlPort(), 47801, "read again by its owner");
         });
     }
 }

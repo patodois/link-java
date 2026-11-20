@@ -79,6 +79,35 @@ public final class Endpoint {
         return FileSystems.getDefault().supportedFileAttributeViews().contains("posix");
     }
 
+    /** For the tests: a user id that {@link #processUid()} gives instead of the process's own. */
+    static volatile Long uidForTests;
+
+    private static volatile Long processUid;
+    private static volatile boolean processUidKnown;
+
+    /**
+     * The numeric user id of this process, or null where Java cannot tell. Java has no {@code geteuid()}: this is the
+     * real user id that {@code com.sun.security.auth.module.UnixSystem} reports ({@code getuid()}), by reflection, so a
+     * runtime without the {@code jdk.security.auth} module gives null. The real and the effective user id differ only in
+     * a set-user-ID process, which a JVM is not run as.
+     */
+    static Long processUid() {
+        Long forTests = uidForTests;
+        if (forTests != null) return forTests;
+        if (!processUidKnown) {
+            Long uid = null;
+            try {
+                Class<?> unix = Class.forName("com.sun.security.auth.module.UnixSystem");
+                uid = (Long) unix.getMethod("getUid").invoke(unix.getConstructor().newInstance());
+            } catch (ReflectiveOperationException | RuntimeException | LinkageError cannot) {
+                // not a Unix runtime, or the module is not there
+            }
+            processUid = uid;
+            processUidKnown = true;
+        }
+        return processUid;
+    }
+
     // ---------------------------------------------------------------------------------------------
     // Writing
 
@@ -163,20 +192,49 @@ public final class Endpoint {
      * 1 to 65535 and {@code token} a string of 1 to 256 bytes of UTF-8. Other fields are ignored. Where there are no
      * POSIX permissions (Windows) the permission check is skipped; the user's directory ACL protects the file.
      *
+     * <p>From revision 8, on Unix, the file must also belong to this process's user (the file's {@code unix:uid}
+     * attribute against {@link #processUid()}), so a guest that can read other users' owner-only files (root, or one
+     * an ACL lets) does not trust a file another user wrote with mode 0600. Where Java cannot tell (no {@code unix}
+     * attribute view, or no {@code UnixSystem}) the check is skipped. Like the mode, it is checked on the path, not on
+     * the opened file, since Java has no {@code fstat} of an open channel.
+     *
      * @throws IOException if the file is missing or refused; the message never contains the file's contents
      */
     public static Endpoint read(Path path) throws IOException {
-        Class<? extends BasicFileAttributes> kind = posix() ? PosixFileAttributes.class : BasicFileAttributes.class;
-        BasicFileAttributes a = Files.readAttributes(path, kind);
-        if (!a.isRegularFile()) throw new IOException("the endpoint file is not a regular file");
-        if (a instanceof PosixFileAttributes) {
-            for (PosixFilePermission p : ((PosixFileAttributes) a).permissions()) {
-                String n = p.name();
+        // One stat: the unix view gives the type, the permissions and the owner together; without it, the posix view.
+        boolean regular;
+        Set<?> permissions = null;
+        Number owner = null;
+        Map<String, Object> unix = null;
+        if (posix()) {
+            try {
+                unix = Files.readAttributes(path, "unix:isRegularFile,permissions,uid");
+            } catch (UnsupportedOperationException | IllegalArgumentException noUnixView) {
+                // the posix view below
+            }
+        }
+        if (unix != null) {
+            regular = Boolean.TRUE.equals(unix.get("isRegularFile"));
+            permissions = (Set<?>) unix.get("permissions");
+            owner = (Number) unix.get("uid");
+        } else if (posix()) {
+            PosixFileAttributes a = Files.readAttributes(path, PosixFileAttributes.class);
+            regular = a.isRegularFile();
+            permissions = a.permissions();
+        } else {
+            regular = Files.readAttributes(path, BasicFileAttributes.class).isRegularFile();
+        }
+        if (!regular) throw new IOException("the endpoint file is not a regular file");
+        if (permissions != null) {
+            for (Object p : permissions) {
+                String n = ((PosixFilePermission) p).name();
                 if (n.startsWith("GROUP_") || n.startsWith("OTHERS_")) {
                     throw new IOException("the endpoint file is accessible to the group or to others");
                 }
             }
         }
+        Long me = owner == null ? null : processUid();
+        if (me != null && owner.longValue() != me) throw new IOException("the endpoint file belongs to another user");
         byte[] raw = readAtMost(path, MAX_FILE_BYTES + 1);
         if (raw.length > MAX_FILE_BYTES) throw new IOException("the endpoint file is larger than " + MAX_FILE_BYTES + " bytes");
         int n = raw.length;

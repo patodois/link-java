@@ -67,10 +67,6 @@ final class VectorTests {
     /** Vectors this implementation fails, id to reason (put them here). Empty when it passes them all. */
     static final Map<String, String> KNOWN_DISAGREEMENTS = new LinkedHashMap<>();
 
-    static {
-        KNOWN_DISAGREEMENTS.put("pw.file_is_owner_only", "revision 8 pixel file mode (section 9.6) is not implemented yet");
-    }
-
     private static final long STEP_WAIT_MS = 3000;
     private static final InetAddress LO = loopback();
     private static final Set<String> ALL_IDS = new HashSet<>();
