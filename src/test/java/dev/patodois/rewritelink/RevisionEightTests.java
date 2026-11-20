@@ -35,6 +35,7 @@ final class RevisionEightTests {
         texts();
         poseOrder();
         candidates();
+        bounds();
     }
 
     // ---------------------------------------------------------------------------------------------
@@ -396,6 +397,60 @@ final class RevisionEightTests {
                 check(bye != null && bye.contains("no hello before the timeout"), "a times out: " + bye);
                 check(ms >= 300 && ms < 1500, "after the host's timeout of 600 ms, took " + ms);
                 check(await(host, events, LinkEvent.HandshakeFailed.class, 1000) != null, "reported");
+            }
+        });
+    }
+
+    // ---------------------------------------------------------------------------------------------
+    // Bounds per poll (sections 2 and 6.1)
+
+    static void bounds() {
+        test("revision 8: a host accepts at most 8 connections per poll and holds at most 16 closing sockets", () -> {
+            try (ReviewTests.Pair p = new ReviewTests.Pair()) {
+                List<Raw> raws = new ArrayList<>();
+                try {
+                    for (int i = 0; i < 40; i++) raws.add(Raw.to(p.host)); // in the backlog: the host is not polled meanwhile
+                    Thread.sleep(100);
+                    p.host.poll();
+                    int answered = 0;
+                    Thread.sleep(100);
+                    for (Raw r : raws) {
+                        r.raw.fill();
+                        if (r.raw.takeLine() != null) answered++;
+                    }
+                    eq(answered, Link.MAX_ACCEPTS_PER_POLL, "connections answered busy by one poll");
+                    check(p.host.closingCount() <= Link.MAX_CLOSING, "closing sockets after one poll: " + p.host.closingCount());
+                    int most = 0;
+                    for (int i = 0; i < 10; i++) {
+                        p.host.poll();
+                        most = Math.max(most, p.host.closingCount());
+                    }
+                    eq(most, Link.MAX_CLOSING, "the closing sockets stay at the bound (none of the 40 reads)");
+                    // Every connection is answered or closed, and the session goes on.
+                    for (Raw r : raws) check(r.closed(p.host, new ArrayList<>(), 3000), "a connection of the flood ends");
+                    check(p.host.isConnected(), "the session goes on");
+                } finally {
+                    for (Raw r : raws) r.close();
+                }
+            }
+        });
+
+        test("revision 8: a poll reads at most 64 datagrams with no session, and at most 1024 with one", () -> {
+            try (Link host = Link.host(hostConfig()); java.net.DatagramSocket other = new java.net.DatagramSocket(0, LO)) {
+                for (int i = 0; i < 100; i++) other.send(new java.net.DatagramPacket(new byte[1], 1, LO, host.udpPort()));
+                Thread.sleep(100);
+                long before = host.foreign;
+                host.poll();
+                long read = host.foreign - before;
+                check(read >= 1 && read <= Link.MAX_DATAGRAMS_WITHOUT_SESSION, "read without a session: " + read);
+                try (RawGuest g = new RawGuest(host)) {
+                    for (int i = 0; i < 1500; i++) g.datagram(new Wire.Datagram.Heartbeat());
+                    Thread.sleep(200);
+                    long r0 = host.datagramsReceived;
+                    host.poll();
+                    long first = host.datagramsReceived - r0;
+                    check(first >= 1 && first <= Link.MAX_DATAGRAMS_PER_POLL, "read in one poll of a session: " + first);
+                }
             }
         });
     }

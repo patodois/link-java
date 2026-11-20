@@ -47,6 +47,31 @@ public final class Link implements AutoCloseable {
      */
     static final int MAX_CANDIDATES = 4;
     /**
+     * Host: connections accepted at most per {@link #poll()} (CONTRACT.md 2, revision 8: the reference value, which the
+     * shared tests assume). The others wait in the system's backlog for the next poll; a connection the host has not
+     * accepted costs it nothing.
+     */
+    static final int MAX_ACCEPTS_PER_POLL = 8;
+    /**
+     * Sockets held at most while they close (the drain of CONTRACT.md 6.1; section 2, revision 8). When one more has to
+     * be closed, the oldest is closed at once, without the rest of its drain.
+     */
+    static final int MAX_CLOSING = 16;
+    /**
+     * Datagrams one {@link #poll()} reads at most while a session is live (CONTRACT.md 2, revision 8: the reference
+     * value); the rest wait in the socket for the next poll. This bounds how much of a tick datagrams from other senders
+     * can take where the socket is not connected to the peer. A side that polls much less often than its peer sends
+     * needs more than this between two polls, or its buffer fills: normal traffic is a collision snapshot of 32
+     * datagrams a poll, a heartbeat, a camera and a few pose datagrams.
+     */
+    static final int MAX_DATAGRAMS_PER_POLL = 1024;
+    /**
+     * Datagrams one {@link #poll()} reads, and discards, at most while no session is live (CONTRACT.md 2, revision 8).
+     * None of them can be the peer's, so the rest may stay in the socket's buffer, where the system drops what does not
+     * fit.
+     */
+    static final int MAX_DATAGRAMS_WITHOUT_SESSION = 64;
+    /**
      * 127.0.0.1 itself, as the contract requires. {@code InetAddress.getLoopbackAddress()} is
      * {@code ::1} when the JVM runs with {@code -Djava.net.preferIPv6Addresses=system} (as the
      * NeoForge and Forge launchers do), and a 127.0.0.1 peer then never connects.
@@ -579,7 +604,7 @@ public final class Link implements AutoCloseable {
                     if (still != null) candidates.addLast(still);
                 }
             }
-            while (true) {
+            for (int accepted = 0; accepted < MAX_ACCEPTS_PER_POLL; accepted++) {
                 SocketChannel ch;
                 try {
                     ch = listener.accept();
@@ -690,7 +715,17 @@ public final class Link implements AutoCloseable {
             else lastError="local bye control line too long";
         }
         Closing c = new Closing(ctl, now);
-        if (c.pump(now)) closing.add(c);
+        if (c.pump(now)) {
+            // At most MAX_CLOSING (CONTRACT.md 2 and 6.1, revision 8): the oldest is closed at once, without the rest of
+            // its drain, so connections that never read cannot cost a socket each for the linger time.
+            if (closing.size() >= MAX_CLOSING) closing.remove(0).ctl.closeQuietly();
+            closing.add(c);
+        }
+    }
+
+    /** For the tests: how many sockets are closing. */
+    synchronized int closingCount() {
+        return closing.size();
     }
 
     private Ctl ctl() {
@@ -966,7 +1001,9 @@ public final class Link implements AutoCloseable {
     }
 
     private void pollUdp(long now) {
-        for (int n = 0; n < 4096; n++) {
+        // Bounded per poll (CONTRACT.md 2, revision 8): with no session none of them can be the peer's.
+        int budget = conn instanceof Live ? MAX_DATAGRAMS_PER_POLL : MAX_DATAGRAMS_WITHOUT_SESSION;
+        for (int n = 0; n < budget; n++) {
             InetSocketAddress from;
             try {
                 rx.clear();
