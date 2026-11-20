@@ -397,13 +397,17 @@ public final class LinkTests {
                             .filter(e -> e instanceof LinkEvent.Poses).findFirst().get();
                     eq(got.poses().get(0).translation()[0], 42f, "pose x");
 
-                    // A stale pose (older time) is dropped.
+                    // An older time is never sent (revision 8, section 5): the sender raises it to the last one plus 1 us.
                     Wire.Pose old = Wire.Pose.identity(9, pose.timeUs() - 1000);
                     guest.sendPoses(Collections.singletonList(old));
-                    Thread.sleep(50);
                     hostEvents.clear();
-                    hostEvents.addAll(host.poll());
-                    check(hostEvents.stream().noneMatch(e -> e instanceof LinkEvent.Poses), "stale pose dropped");
+                    check(until(2000, () -> {
+                        hostEvents.addAll(host.poll());
+                        return hostEvents.stream().anyMatch(e -> e instanceof LinkEvent.Poses);
+                    }), "the raised pose arrives");
+                    LinkEvent.Poses raised = (LinkEvent.Poses) hostEvents.stream().filter(e -> e instanceof LinkEvent.Poses).findFirst().get();
+                    eq(raised.poses().get(0).timeUs(), pose.timeUs() + 1, "sent with the last time plus 1 us");
+                    eq(guest.poseTimeRaised, 1L, "and counted");
 
                     // Focus: the guest asks, the host grants.
                     guest.setFocus(Role.GUEST);

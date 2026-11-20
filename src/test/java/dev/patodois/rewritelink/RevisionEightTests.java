@@ -33,6 +33,7 @@ final class RevisionEightTests {
 
     static void run() {
         texts();
+        poseOrder();
     }
 
     // ---------------------------------------------------------------------------------------------
@@ -94,6 +95,46 @@ final class RevisionEightTests {
         @Override
         public void close() {
             raw.close();
+        }
+    }
+
+    /**
+     * A raw guest of {@code host}: a control connection whose hello announces a UDP socket of its own, and datagrams sent
+     * from that socket with the session of the host's hello.
+     */
+    static final class RawGuest implements AutoCloseable {
+        final Link host;
+        final List<LinkEvent> events = new ArrayList<>();
+        final java.net.DatagramSocket udp;
+        final Raw ctl;
+        final long session;
+        int seq;
+
+        RawGuest(Link host) throws Exception {
+            this.host = host;
+            udp = new java.net.DatagramSocket(0, LO);
+            ctl = Raw.to(host);
+            ctl.send(guestHello("").replace("\"udp_port\":4000", "\"udp_port\":" + udp.getLocalPort()));
+            String hello = ctl.line(host, events, 3000);
+            check(hello != null && hello.contains("\"hello\""), "the host's hello, got " + hello);
+            session = (Long) VectorTests.obj(Json.parse(hello)).get("session");
+            check(await(host, events, LinkEvent.Connected.class, 3000) != null, "connected");
+            events.clear();
+        }
+
+        void line(String text) throws Exception {
+            ctl.send(text);
+        }
+
+        void datagram(Wire.Datagram body) throws Exception {
+            byte[] b = Wire.encode(new Wire.Header(1, 0, (int) session, seq++, Wire.nowUs()), body);
+            udp.send(new java.net.DatagramPacket(b, b.length, LO, host.udpPort()));
+        }
+
+        @Override
+        public void close() {
+            ctl.close();
+            udp.close();
         }
     }
 
@@ -211,6 +252,76 @@ final class RevisionEightTests {
                     check(f != null, "handshake failed");
                     eq(f.reason(), "peer said bye: x y", "the first line's reason, cleaned");
                 }
+            }
+        });
+    }
+
+    // ---------------------------------------------------------------------------------------------
+    // Pose order (sections 5, 7, 8 spawn, 9.4)
+
+    static Wire.Pose pose(long entity, int flags, long timeUs) {
+        return new Wire.Pose(entity, flags, timeUs, new float[3], new float[] {0, 0, 0, 1}, new float[] {1, 1, 1}, new float[3], new float[3]);
+    }
+
+    /** The time_us of every pose the link delivered, in order, after polling it for a while. */
+    static List<Long> deliveredTimes(Link link, long ms) throws InterruptedException {
+        List<Long> out = new ArrayList<>();
+        until(ms, () -> {
+            for (LinkEvent e : link.poll()) {
+                if (e instanceof LinkEvent.Poses) for (Wire.Pose p : ((LinkEvent.Poses) e).poses()) out.add(p.timeUs());
+            }
+            return false;
+        });
+        return out;
+    }
+
+    static void poseOrder() {
+        test("revision 8: a sender raises a pose time that goes back to the last one plus 1 us, and counts it", () -> {
+            try (ReviewTests.Pair p = new ReviewTests.Pair()) {
+                p.guest.spawn(new Control.Spawn(9, "P", "a", null));
+                deliveredTimes(p.host, 100);
+                p.guest.sendPoses(java.util.Arrays.asList(pose(9, 0, 1000), pose(9, 0, 500)));
+                p.guest.sendPoses(java.util.Collections.singletonList(pose(9, 0, 700)));
+                eq(deliveredTimes(p.host, 300), java.util.Arrays.asList(1000L, 1001L, 1002L), "times the host received");
+                eq(p.guest.poseTimeRaised, 2L, "counted");
+                // TELEPORT starts the order again at its own time, and later poses are ordered after it.
+                p.guest.sendPoses(java.util.Collections.singletonList(pose(9, Wire.POSE_TELEPORT, 200)));
+                p.guest.sendPoses(java.util.Collections.singletonList(pose(9, 0, 100)));
+                eq(deliveredTimes(p.host, 300), java.util.Arrays.asList(200L, 201L), "after a teleport");
+                // A spawn of the live entity starts it again too.
+                p.guest.spawn(new Control.Spawn(9, "P", "a", null));
+                deliveredTimes(p.host, 100);
+                p.guest.sendPoses(java.util.Collections.singletonList(pose(9, 0, 50)));
+                eq(deliveredTimes(p.host, 300), java.util.Collections.singletonList(50L), "after a respawn");
+                eq(p.guest.poseTimeRaised, 3L, "counted");
+                // The largest u64 stays itself.
+                p.guest.sendPoses(java.util.Arrays.asList(pose(9, 0, -1L), pose(9, 0, 5)));
+                eq(deliveredTimes(p.host, 300), java.util.Arrays.asList(-1L, -1L), "the largest time is not wrapped");
+                // Another entity has an order of its own.
+                p.guest.spawn(new Control.Spawn(10, "P", "a", null));
+                deliveredTimes(p.host, 100);
+                p.guest.sendPoses(java.util.Collections.singletonList(pose(10, 0, 3)));
+                eq(deliveredTimes(p.host, 300), java.util.Collections.singletonList(3L), "entity 10");
+            }
+        });
+
+        test("revision 8: a receiver uses a TELEPORT pose whatever its time, and a respawn forgets the last time", () -> {
+            try (Link host = Link.host(hostConfig()); RawGuest g = new RawGuest(host)) {
+                g.line("{\"type\":\"spawn\",\"entity\":5,\"provider\":\"P\",\"asset\":\"a\"}\n");
+                deliveredTimes(host, 100);
+                long stale0 = host.stale;
+                // One datagram per pose, so that each is a step of its own.
+                long[][] sent = {{1000, 0}, {999, Wire.POSE_TELEPORT}, {999, 0}, {998, 0}, {1001, 0}};
+                for (long[] s : sent) g.datagram(new Wire.Datagram.PoseMsg(java.util.Collections.singletonList(pose(5, (int) s[1], s[0]))));
+                eq(deliveredTimes(host, 300), java.util.Arrays.asList(1000L, 999L, 999L, 1001L), "used");
+                eq(host.stale - stale0, 1L, "the plain older pose is dropped");
+                // Records of one datagram are taken in record order.
+                g.datagram(new Wire.Datagram.PoseMsg(java.util.Arrays.asList(pose(5, 0, 900), pose(5, Wire.POSE_TELEPORT, 800), pose(5, 0, 850))));
+                eq(deliveredTimes(host, 300), java.util.Arrays.asList(800L, 850L), "in record order");
+                g.line("{\"type\":\"spawn\",\"entity\":5,\"provider\":\"P\",\"asset\":\"a\"}\n");
+                deliveredTimes(host, 100);
+                g.datagram(new Wire.Datagram.PoseMsg(java.util.Collections.singletonList(pose(5, 0, 10))));
+                eq(deliveredTimes(host, 300), java.util.Collections.singletonList(10L), "after a respawn");
             }
         });
     }

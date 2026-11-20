@@ -92,8 +92,16 @@ public final class Link implements AutoCloseable {
 
     // per-session state
     private Integer lastCamera;
-    /** The peer's live spawned entities, each with the time_us of its newest pose. */
+    /**
+     * The peer's live spawned entities, each with the time_us of the last pose used for it: 0 before the first, and
+     * again after a second spawn of the entity (CONTRACT.md 7, revision 8).
+     */
     private final Map<Long, Long> entities = new HashMap<>();
+    /**
+     * The time_us of the last pose this side sent for each of its own entities, which the next one may not go below
+     * (CONTRACT.md 5, revision 8). Forgotten on spawn, despawn and at the end of the session.
+     */
+    private final Map<Long, Long> sentPoseTimes = new HashMap<>();
     private boolean spawnIgnoredLogged;
     private Integer lastCollision;
     private Assembly assembly;
@@ -105,6 +113,11 @@ public final class Link implements AutoCloseable {
     public long unknownEntity;
     /** Spawns ignored because the peer already had {@link Wire#MAX_ENTITIES} live entities. */
     public long spawnIgnored;
+    /**
+     * Poses this side was asked to send with a time_us lower than the last one it sent for the entity, and sent with that
+     * time plus one microsecond instead (CONTRACT.md 5, revision 8).
+     */
+    public long poseTimeRaised;
 
     private final ByteBuffer rx = ByteBuffer.allocate(2 * Wire.MAX_DATAGRAM);
 
@@ -673,18 +686,18 @@ public final class Link implements AutoCloseable {
         } else if (msg instanceof Control.Spawn) {
             Control.Spawn sp = (Control.Spawn) msg;
             // A second spawn of a live id replaces the first; a new id needs a free place.
-            if (!entities.containsKey(sp.entity())) {
-                if (entities.size() >= Wire.MAX_ENTITIES) {
-                    spawnIgnored++;
-                    if (!spawnIgnoredLogged) {
-                        spawnIgnoredLogged = true;
-                        System.err.println("link-java: the peer has " + Wire.MAX_ENTITIES
-                                + " live entities; further spawns are ignored (entity " + sp.entity() + " and later ones)");
-                    }
-                    return null;
+            if (!entities.containsKey(sp.entity()) && entities.size() >= Wire.MAX_ENTITIES) {
+                spawnIgnored++;
+                if (!spawnIgnoredLogged) {
+                    spawnIgnoredLogged = true;
+                    System.err.println("link-java: the peer has " + Wire.MAX_ENTITIES
+                            + " live entities; further spawns are ignored (entity " + sp.entity() + " and later ones)");
                 }
-                entities.put(sp.entity(), 0L);
+                return null;
             }
+            // A new entity has no pose yet, and neither has one that replaces a live entity: its next pose is used
+            // whatever its time (CONTRACT.md 7 and 8, spawn, revision 8).
+            entities.put(sp.entity(), 0L);
             events.add(new LinkEvent.Spawn(sp.name() == null ? sp
                     : new Control.Spawn(sp.entity(), sp.provider(), sp.asset(), forPeople(sp.name()))));
         } else if (msg instanceof Control.Despawn) {
@@ -795,6 +808,7 @@ public final class Link implements AutoCloseable {
         focus = Role.HOST;
         lastCamera = null;
         entities.clear();
+        sentPoseTimes.clear();
         spawnIgnoredLogged = false;
         collisionQueue.clear();
         lastCollision = null;
@@ -871,6 +885,8 @@ public final class Link implements AutoCloseable {
         } else if (body instanceof Datagram.PoseMsg) {
             List<Wire.Pose> poses = ((Datagram.PoseMsg) body).poses();
             List<Wire.Pose> fresh = new ArrayList<>(poses.size());
+            // In record order (CONTRACT.md 9.4): a pose older than the last one used is dropped, unless it has the
+            // TELEPORT flag, which starts the entity's order again at its own time (section 7, revision 8).
             for (Wire.Pose pose : poses) {
                 Long last = entities.get(pose.entity());
                 if (last == null) {
@@ -878,7 +894,7 @@ public final class Link implements AutoCloseable {
                     continue;
                 }
                 // time_us is a u64 sampled from the wall clock; it never reaches the sign bit.
-                if (Long.compareUnsigned(pose.timeUs(), last) >= 0) {
+                if (Long.compareUnsigned(pose.timeUs(), last) >= 0 || (pose.flags() & Wire.POSE_TELEPORT) != 0) {
                     entities.put(pose.entity(), pose.timeUs());
                     fresh.add(pose);
                 } else {
@@ -980,12 +996,32 @@ public final class Link implements AutoCloseable {
     /**
      * Sends poses, at most {@link Wire#MAX_POSES} per datagram.
      *
+     * <p>An entity's pose times never go back (CONTRACT.md 5, revision 8): a pose whose {@code time_us} is lower than the
+     * last one sent for its entity is sent with that time plus one microsecond instead (the largest 64-bit value stays
+     * itself), and counted in {@link #poseTimeRaised}; a wall clock that steps back is carried that way until it has
+     * caught up. A pose with {@link Wire#POSE_TELEPORT}, and the first pose after {@link #spawn} of the entity, may carry
+     * any time and start the entity's order again; the receiver does the same. Times compare as unsigned 64-bit values.
+     *
      * @throws WireException if not connected or an entity is outside 0..4294967295 (nothing is sent then)
      */
     public synchronized void sendPoses(List<Wire.Pose> poses) throws WireException {
         for (Wire.Pose p : poses) u32("entity", p.entity()); // all of them first: no datagram goes out for a bad list
-        for (int i = 0; i < poses.size(); i += Wire.MAX_POSES) {
-            send(new Datagram.PoseMsg(poses.subList(i, Math.min(poses.size(), i + Wire.MAX_POSES))));
+        if (poses.isEmpty()) return;
+        if (!(conn instanceof Live)) throw new WireException("not connected");
+        List<Wire.Pose> ordered = new ArrayList<>(poses.size());
+        for (Wire.Pose p : poses) {
+            Long last = sentPoseTimes.get(p.entity());
+            if (last != null && (p.flags() & Wire.POSE_TELEPORT) == 0 && Long.compareUnsigned(p.timeUs(), last) < 0) {
+                long raised = last == -1L ? last : last + 1; // the largest u64 stays itself
+                p = new Wire.Pose(p.entity(), p.flags(), raised, p.translation(), p.rotation(), p.scale(), p.velocity(),
+                        p.angularVelocity());
+                poseTimeRaised++;
+            }
+            sentPoseTimes.put(p.entity(), p.timeUs());
+            ordered.add(p);
+        }
+        for (int i = 0; i < ordered.size(); i += Wire.MAX_POSES) {
+            send(new Datagram.PoseMsg(ordered.subList(i, Math.min(ordered.size(), i + Wire.MAX_POSES))));
         }
     }
 
@@ -1029,14 +1065,21 @@ public final class Link implements AutoCloseable {
         send(new Datagram.FrameMsg(frame));
     }
 
-    /** @throws WireException if not connected or the entity is outside 0..4294967295 (nothing is sent then) */
+    /**
+     * Announces one of this side's entities. A spawn of a live entity replaces it, and the entity's next pose may carry
+     * any time (CONTRACT.md 5 and 8, revision 8).
+     *
+     * @throws WireException if not connected or the entity is outside 0..4294967295 (nothing is sent then)
+     */
     public synchronized void spawn(Control.Spawn spawn) throws WireException {
         sendControl(spawn);
+        sentPoseTimes.remove(spawn.entity());
     }
 
     /** @throws WireException if not connected or the entity is outside 0..4294967295 (nothing is sent then) */
     public synchronized void despawn(long entity) throws WireException {
         sendControl(new Control.Despawn(entity));
+        sentPoseTimes.remove(entity);
     }
 
     /** Host: gives the focus to {@code focus}. Guest: asks the host for it. */

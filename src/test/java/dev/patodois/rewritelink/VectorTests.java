@@ -75,11 +75,6 @@ final class VectorTests {
         KNOWN_DISAGREEMENTS.put("sess.host.handshake.displaced_candidate_is_the_oldest", "revision 8 candidates (section 2) are not implemented yet");
         KNOWN_DISAGREEMENTS.put("sess.host.handshake.partial_line_does_not_protect_a_candidate", "revision 8 candidates (section 2) are not implemented yet");
         KNOWN_DISAGREEMENTS.put("sess.host.flood.guest_gets_in_after_a_flood", "revision 8 candidates (section 2) are not implemented yet");
-        KNOWN_DISAGREEMENTS.put("sess.host.udp.pose_teleport_older_time_is_used", "revision 8 pose order (sections 5, 7, 9.4) is not implemented yet");
-        KNOWN_DISAGREEMENTS.put("sess.host.udp.pose_after_respawn_any_time_is_used", "revision 8 pose order (sections 5, 7, 9.4) is not implemented yet");
-        KNOWN_DISAGREEMENTS.put("sess.host.udp.pose_far_future_then_teleport_recovers", "revision 8 pose order (sections 5, 7, 9.4) is not implemented yet");
-        KNOWN_DISAGREEMENTS.put("sess.guest.udp.pose_teleport_older_time_is_used", "revision 8 pose order (sections 5, 7, 9.4) is not implemented yet");
-        KNOWN_DISAGREEMENTS.put("sess.host.sends.pose_time_never_goes_back", "revision 8 pose order (sections 5, 7, 9.4) is not implemented yet");
         KNOWN_DISAGREEMENTS.put("sess.host.watchdog.own_pause_is_not_peer_silence", "revision 8 rule for a side that was not running (section 7) is not implemented yet");
         KNOWN_DISAGREEMENTS.put("sess.guest.watchdog.own_pause_is_not_peer_silence", "revision 8 rule for a side that was not running (section 7) is not implemented yet");
         KNOWN_DISAGREEMENTS.put("sess.host.handshake.own_pause_keeps_the_candidate", "revision 8 rule for a side that was not running (section 7) is not implemented yet");
