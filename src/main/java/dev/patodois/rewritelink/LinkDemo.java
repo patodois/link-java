@@ -90,7 +90,7 @@ public final class LinkDemo {
                     closeQuietly(reader);
                     reader = null;
                     try {
-                        reader = PixelFile.Reader.open(Paths.get(c.path()));
+                        reader = PixelFile.Reader.open(c.path());
                         log("host", "guest pixel file " + c.path() + " (" + c.width() + "x" + c.height() + ", " + c.slots()
                                 + " slots, depth plane: " + reader.hasDepth() + ")");
                     } catch (IOException ex) {

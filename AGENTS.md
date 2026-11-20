@@ -1,7 +1,7 @@
 # Agent guide
 
 link-java implements rewrite-bridge's passthrough link protocol for Java game mods and plugins.
-It supplies host and guest roles for protocol v1, contract revision 7, and is bundled by minecraft-link.
+It supplies host and guest roles for protocol v1, contract revision 8, and is bundled by minecraft-link.
 
 ## Toolchain, build and CI
 
@@ -40,7 +40,8 @@ python3 -m venv .workflow-tests
 - `Control`, `Wire`, `Json`, `Quat`: control lines, datagrams, the JSON reader, quaternion helpers.
 - `PixelFile`, `Tokens`, `Endpoint`: pixel I/O and authentication.
 - `LinkDemo`: standalone command-line host/guest.
-- `src/test/java/`, `tests/vectors/link/`: plain runners, interop peer and shared vectors.
+- `src/test/java/`, `tests/vectors/link/`: plain runners, interop peer and shared vectors; `RevisionEightTests` holds
+  one group of tests per revision 8 rule.
 - `PIXEL-IO.md`, `fuzz/`: pixel-reader rules and fuzzing support.
 - `tools/`: the public-tree gate (`check_public_tree.py`), workflow checks and their Python tests.
 
@@ -48,6 +49,12 @@ python3 -m venv .workflow-tests
 
 - Preserve Java 8 API compatibility, including library calls, through `--release 8`.
 - Bind and connect only to `127.0.0.1`; `Link.poll()` must not wait for the network or the peer.
+- Revision 8 bounds are reference values the shared vectors assume (`Link.MAX_CANDIDATES`, `MAX_ACCEPTS_PER_POLL`,
+  `MAX_CLOSING`, `MAX_DATAGRAMS_PER_POLL`, `MAX_DATAGRAMS_WITHOUT_SESSION`); keep them unless the contract changes.
+- Never disconnect a connected `DatagramChannel`; with UDP port 0 a session gets a new socket instead
+  (`Link.udpPort()` may change between sessions).
+- Texts sent or reported for a refused line are fixed and quote nothing from it; peer text for people goes through
+  `Link.forPeople`.
 - Follow rewrite-bridge's contract; vectors come from it and are pinned by digest.
 - Present with `readLatest`, close obsolete readers and discard results from replaced channels.
 - Shared-vector tests can use sparse files up to 1 GiB, and one test a sparse file of just over 2 GiB;

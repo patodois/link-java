@@ -1,7 +1,7 @@
 # link-java
 
 link-java implements the **rewrite-bridge passthrough link protocol v1** for **Java game-mod and plugin developers**, enabling a game to act as a host or guest alongside other games. The protocol is defined by
-`docs/CONTRACT.md` in the `rewrite-bridge` repository (revision 7); this library is one
+`docs/CONTRACT.md` in the `rewrite-bridge` repository (revision 8); this library is one
 implementation of it, tested against the Rust reference peers (`fake_host`, `fake_guest`), which come with
 the [`rewrite-bridge`](https://crates.io/crates/rewrite-bridge) crate:
 `cargo install rewrite-bridge --version 0.4.0 --features link --examples`.
@@ -20,6 +20,50 @@ the [`rewrite-bridge`](https://crates.io/crates/rewrite-bridge) crate:
   synchronized so a game thread may send while a helper thread polls (`LinkRunner` is that helper
   thread). A guest with an endpoint file reads that small file before each connection attempt, and the
   link prints one line to `System.err` once per session when the peer passes 1024 live entities.
+
+## Contract revision 8
+
+Revision 8 changes no message, field, datagram or file layout, so the protocol stays version 1 and a revision 7
+peer still opens and keeps a session. What this library now does:
+
+- **Candidates before a session.** While no session is live a host holds up to 4 connections that have not sent a
+  complete first line (`Link.MAX_CANDIDATES`). The first whose first line is an acceptable `hello` becomes the
+  session and the others are told `busy`; a refused one fails alone; a fifth connection displaces the oldest, with a
+  `bye` that is not `busy` and no event. A silent connection can no longer keep the guest with the token out. `busy`
+  is answered only while a session is live.
+- **Bounds per poll.** A host accepts at most 8 connections per poll and holds at most 16 sockets while they close
+  (beyond that the oldest is closed without its drain). A poll reads at most 1024 datagrams during a session and 64
+  without one.
+- **The UDP socket.** With UDP port 0 (the default) the socket is connected to the peer during a session, so the
+  system drops other senders' datagrams, and each session gets a new socket on a new port: `Link.udpPort()` may change
+  between sessions, and the `hello` announces the current one. A connected socket is never disconnected. With a fixed
+  UDP port the socket is not connected (a Java `DatagramChannel` cannot be connected again to another address without
+  a disconnect), so there the address rule and the bound keep other senders out. An unreachable peer port is a lost
+  datagram, never the end of the session.
+- **Pose order.** `sendPoses` never sends an entity a `time_us` lower than the last one it sent it: such a pose goes
+  out with the last time plus 1 microsecond, counted in `Link.poseTimeRaised`. A pose with `Wire.POSE_TELEPORT`, and
+  the first pose after `spawn` of the entity, may carry any time and restart its order; a receiver uses a teleport
+  whatever its time, and a second `spawn` of a live entity forgets its last pose time.
+- **A side that was not running.** After more than a timeout between two polls (a suspended process, a debugger, a
+  machine that slept), the watchdog, a host's wait for a candidate's first line and a guest's wait for the host's
+  `hello` start again at that poll. Polling less often than the timeout is still not conforming.
+- **Texts.** The reason of a `bye` sent for a refused line, and the reason of the `HandshakeFailed` or `Lost` event, are
+  fixed texts that quote nothing from the line (`heartbeat_ms outside 10 to 10000`, not the value). Text from the peer
+  meant for people (the `game` of its `hello`, a `spawn` name, the reason of its `bye`) reaches the application with
+  every character below U+0020 and U+007F replaced by a space; `provider`, `asset` and `path` are handed on as sent.
+- **Files.** On a POSIX file system `PixelFile.Writer` creates its file with mode `rw-------`. `Endpoint.read` refuses
+  on Unix a file that does not belong to the process's user; Java has no `geteuid()`, so this compares the file's
+  `unix:uid` with the real user id from `com.sun.security.auth.module.UnixSystem` (they differ only in a set-user-ID
+  process), and is skipped where Java cannot tell.
+- **Windows pixel paths.** `PixelFile.Reader.open` refuses on Windows, before touching the path, everything that is not
+  a drive-letter path (`X:\...`, `X:/...`, `\\?\X:\...`) or that names a device (`NUL`, `COM1`...): UNC and device
+  paths never reach the file system. It also refuses a removable or CD-ROM drive. Java cannot tell a mapped network
+  drive (it has no `GetDriveType` result for it) nor give the final path of an opened handle, so a mapped network
+  drive and a directory link to a share are not refused. `PixelFile.Writer` refuses to create a file where a receiver
+  would refuse it. Open a peer's `frame_channel` with the new `PixelFile.Reader.open(String)`, which also takes the
+  `\\?\` form that `Paths.get` throws on.
+- **Numbers.** A number literal anywhere in a line is refused exactly when its correctly rounded double is not finite;
+  `Json` already gave that answer.
 
 ## Migrating pixel consumers to 0.3.0
 
@@ -289,7 +333,8 @@ export JAVA_HOME=/path/to/jdk                    # JDK 17 or newer: Gradle 9 nee
 The tests are a plain runner (`LinkTests`, no JUnit): they encode and decode the contract's worked
 example byte for byte, check every layout offset and length, reject malformed input (plus a
 20,000-case fuzz), and run live sessions in one process (handshake, state flow, stale drops,
-`busy`, bad hello, watchdog, clean bye with half-close, foreign addresses), then `ReviewTests` (one
+`busy`, bad hello, watchdog, clean bye with half-close, foreign addresses), then `RevisionEightTests` (the revision 8
+rules, one group each), `ReviewTests` (one
 regression test per finding of the revision 4 review, and the revision 5 rules) and `PixelFileTests`
 (layout, depth plane, refusals, and the writer-against-reader contention test), then `TokenTests` (revision 6: the
 constant-time comparison, token generation, the endpoint file, live links with a token and an endpoint file, and

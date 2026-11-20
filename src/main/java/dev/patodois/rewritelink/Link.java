@@ -28,7 +28,8 @@ import dev.patodois.rewritelink.Wire.Header;
 import dev.patodois.rewritelink.Wire.WireException;
 
 /**
- * One side of a passthrough link (host or guest). Create it with {@link #host} or {@link #guest},
+ * One side of a passthrough link (host or guest), protocol v1 as contract revision 8 defines it (CONTRACT.md of
+ * rewrite-bridge; section 12 lists what each revision changed). Create it with {@link #host} or {@link #guest},
  * then call {@link #poll()} regularly; it does not wait for the network or the peer (a guest with an
  * endpoint file reads that file before each connection attempt). All public methods are synchronized, so a
  * game thread may send while a helper thread polls (see {@link LinkRunner}).
@@ -566,6 +567,10 @@ public final class Link implements AutoCloseable {
         }
     }
 
+    /**
+     * The port of this side's UDP socket now, the one its next (or current) hello announces. With UDP port 0 configured
+     * each session gets a new socket, so it may change between sessions (CONTRACT.md 2, revision 8).
+     */
     public synchronized int udpPort() {
         try {
             return ((InetSocketAddress) udp.getLocalAddress()).getPort();

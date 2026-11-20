@@ -3,6 +3,12 @@
 Contract revision 7 keeps protocol version 1 and leaves the datagrams, the file header, the
 slot offsets and the depth layout unchanged. Writers retain their mapped publication path.
 
+Revision 8 (section 9.6) adds two rules about where the file is and who can read it. On Unix the
+writer creates the file with mode 0600 from the start; readers do not check the mode. On Windows
+a reader refuses, before any file-system call, every path that is not a drive-letter path or that
+names a device, and a removable or CD-ROM drive; Java cannot tell a mapped network drive. Open a
+peer's path with `PixelFile.Reader.open(String)`.
+
 ## Presenting frames
 
 A Frame event is an unvalidated announcement. Use read_latest (Rust/C), ReadLatest (C#),

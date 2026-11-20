@@ -285,7 +285,7 @@ public final class InteropPeer {
         PixelFile.Reader reader = null;
         try {
             try {
-                reader = PixelFile.Reader.open(Paths.get(frameChannel.path()));
+                reader = PixelFile.Reader.open(frameChannel.path());
             } catch (IOException e) {
                 throw new Abort("cannot open the pixel file " + frameChannel.path() + ": " + e);
             }
