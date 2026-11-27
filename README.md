@@ -1,4 +1,4 @@
-# link-java
+<h1 align="center"><img src="docs/title.png" alt="link-java" width="289"></h1>
 
 link-java implements the **rewrite-bridge passthrough link protocol v1** for **Java game-mod and plugin developers**, enabling a game to act as a host or guest alongside other games. The protocol is defined by
 `docs/CONTRACT.md` in the `rewrite-bridge` repository (revision 8); this library is one
